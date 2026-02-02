@@ -34,7 +34,7 @@ type QueueRow = {
   referredBy: string;
   doctor: string;
   status: QueueStatus;
-  createdAt?: string; // optional (from API), UI doesn't require it
+  createdAt?: string;
 };
 
 type PatientRow = {
@@ -45,83 +45,14 @@ type PatientRow = {
   doctor?: string;
 };
 
-const queueColumns: Column<QueueRow>[] = [
-  {
-    header: "Patient Id",
-    cell: (q) => (
-      <span className="font-medium text-[#1f1f1f]">{q.patientId}</span>
-    ),
-  },
-  {
-    header: "Name",
-    cell: (q) => <span className="text-[#1f1f1f]">{q.name}</span>,
-  },
-  {
-    header: "Phone",
-    cell: (q) => <span className="text-[#646179]">{q.phone}</span>,
-  },
-  {
-    header: "Consulting Doctor",
-    cell: (q) => <span className="text-[#646179]">{q.doctor}</span>,
-  },
-  {
-    header: "Status",
-    cell: (q) => {
-      const label =
-        q.status === "WAITING"
-          ? "Waiting"
-          : q.status === "NEXT"
-          ? "Next"
-          : q.status === "IN_ROOM"
-          ? "In Room"
-          : "Done";
-
-      const pillClass =
-        q.status === "WAITING"
-          ? "bg-amber-50 text-amber-700 border-amber-200"
-          : q.status === "NEXT"
-          ? "bg-blue-50 text-blue-700 border-blue-200"
-          : q.status === "IN_ROOM"
-          ? "bg-green-50 text-green-700 border-green-200"
-          : "bg-gray-50 text-gray-700 border-gray-200";
-
-      return (
-        <span
-          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${pillClass}`}
-        >
-          {label}
-        </span>
-      );
-    },
-  },
-];
-
-const patientColumns: Column<PatientRow>[] = [
-  {
-    header: "Patient Id",
-    cell: (p) => <span className="font-medium text-[#1f1f1f]">{p.id}</span>,
-  },
-  {
-    header: "Name",
-    cell: (p) => <span className="text-[#1f1f1f]">{p.name}</span>,
-  },
-  {
-    header: "Phone",
-    cell: (p) => <span className="text-[#646179]">{p.phone}</span>,
-  },
-  {
-    header: "Last Visit",
-    cell: (p) => <span className="text-[#646179]">{p.lastVisit}</span>,
-  },
-  {
-    header: "Consulting Doctor",
-    cell: (p) => <span className="text-[#646179]">{p.doctor ?? "—"}</span>,
-  },
-];
-
 type FieldErrors = Partial<
   Record<
-    "name" | "phone" | "doctorId" | "consultingFee" | "paymentMode",
+    | "visitDate"
+    | "name"
+    | "phone"
+    | "doctorId"
+    | "consultingFee"
+    | "paymentMode",
     string
   >
 >;
@@ -130,7 +61,6 @@ function digitsOnly(s: string) {
   return s.replace(/\D+/g, "");
 }
 
-// Formats as "XXXXX XXXXX" when 6+ digits, otherwise raw digits.
 function formatPhoneUI(digits: string) {
   const d = digits.slice(0, 10);
   if (d.length <= 5) return d;
@@ -193,22 +123,99 @@ function FormField({
 }) {
   return (
     <div>
-      <label className="block mb-1 text-sm font-medium text-[#646179]">
-        {label}
-      </label>
+      <div className="text-sm font-medium text-slate-600 mb-2">{label}</div>
       {children}
-      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+      {error && (
+        <p className="mt-1 text-sm font-medium text-red-600 mb-2">{error}</p>
+      )}
     </div>
   );
 }
 
+const queueColumns: Column<QueueRow>[] = [
+  {
+    header: "Patient Id",
+    cell: (q) => (
+      <span className="font-medium text-[#1f1f1f]">{q.patientId}</span>
+    ),
+  },
+  {
+    header: "Name",
+    cell: (q) => <span className="text-[#1f1f1f]">{q.name}</span>,
+  },
+  {
+    header: "Phone",
+    cell: (q) => <span className="text-[#646179]">{q.phone || "—"}</span>,
+  },
+  {
+    header: "Referred By",
+    cell: (q) => <span className="text-[#646179]">{q.referredBy || "—"}</span>,
+  },
+  {
+    header: "Consulting Doctor",
+    cell: (q) => <span className="text-[#646179]">{q.doctor}</span>,
+  },
+  {
+    header: "Status",
+    cell: (q) => {
+      const label =
+        q.status === "WAITING"
+          ? "Waiting"
+          : q.status === "NEXT"
+          ? "Next"
+          : q.status === "IN_ROOM"
+          ? "In Room"
+          : "Done";
+
+      const pillClass =
+        q.status === "WAITING"
+          ? "bg-amber-50 text-amber-700 border-amber-200"
+          : q.status === "NEXT"
+          ? "bg-blue-50 text-blue-700 border-blue-200"
+          : q.status === "IN_ROOM"
+          ? "bg-green-50 text-green-700 border-green-200"
+          : "bg-gray-50 text-gray-700 border-gray-200";
+
+      return (
+        <span
+          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${pillClass}`}
+        >
+          {label}
+        </span>
+      );
+    },
+  },
+];
+
+const patientColumns: Column<PatientRow>[] = [
+  {
+    header: "Patient Id",
+    cell: (p) => <span className="font-medium text-[#1f1f1f]">{p.id}</span>,
+  },
+  {
+    header: "Name",
+    cell: (p) => <span className="text-[#1f1f1f]">{p.name}</span>,
+  },
+  {
+    header: "Phone",
+    cell: (p) => <span className="text-[#646179]">{p.phone}</span>,
+  },
+  {
+    header: "Last Visit",
+    cell: (p) => <span className="text-[#646179]">{p.lastVisit}</span>,
+  },
+  {
+    header: "Consulting Doctor",
+    cell: (p) => <span className="text-[#646179]">{p.doctor ?? "—"}</span>,
+  },
+];
+
 export default function ReceptionDashboard() {
   const router = useRouter();
-  // ✅ Today’s Queue from DB (no mocks)
+
   const [queueRows, setQueueRows] = useState<QueueRow[]>([]);
   const [loadingQueue, setLoadingQueue] = useState(false);
 
-  // ✅ KPIs from DB
   const [kpis, setKpis] = useState<ReceptionKpis>({
     registeredToday: 0,
     waiting: 0,
@@ -219,28 +226,27 @@ export default function ReceptionDashboard() {
   });
   const [loadingKpis, setLoadingKpis] = useState(false);
 
-  // Doctors + payment modes from DB
   const [doctors, setDoctors] = useState<DoctorOption[]>([]);
   const [loadingDoctors, setLoadingDoctors] = useState(false);
 
   const [paymentModes, setPaymentModes] = useState<PaymentModeRow[]>([]);
   const [loadingModes, setLoadingModes] = useState(false);
 
-  // Referral combobox selection
   const [referral, setReferral] = useState<{ id: string; name: string } | null>(
     null
   );
-
   const [showAddDoctor, setShowAddDoctor] = useState(false);
 
   const [form, setForm] = useState<{
+    visitDate: string;
     name: string;
     phone: string;
     doctorId: number;
     consultingFee: string;
-    paymentMode: string; // DB-driven
+    paymentMode: string;
     payStatus: PayStatus;
   }>({
+    visitDate: new Date().toISOString().slice(0, 10),
     name: "",
     phone: "",
     doctorId: 0,
@@ -255,15 +261,22 @@ export default function ReceptionDashboard() {
   const [submitting, setSubmitting] = useState(false);
 
   const [showReports, setShowReports] = useState(false);
-  const [patientRows, setPatientRows] = useState<PatientRow[]>([]);
 
+  const [patientRows, setPatientRows] = useState<PatientRow[]>([]);
   const [patientSearch, setPatientSearch] = useState("");
   const [patientLoading, setPatientLoading] = useState(false);
   const [patientError, setPatientError] = useState<string | null>(null);
-
-  // (Optional) pagination later
   const [patientPage, setPatientPage] = useState(1);
   const pageSize = 15;
+
+  // Prefill search
+  const [prefillQuery, setPrefillQuery] = useState("");
+  const [prefillLoading, setPrefillLoading] = useState(false);
+  const [prefillHits, setPrefillHits] = useState<
+    { patientCode: string; name: string; phone: string | null }[]
+  >([]);
+  const [showPickPatient, setShowPickPatient] = useState(false);
+  const [prefillError, setPrefillError] = useState<string | null>(null);
 
   async function loadPatients(search = patientSearch, page = patientPage) {
     setPatientLoading(true);
@@ -292,7 +305,6 @@ export default function ReceptionDashboard() {
     }
   }
 
-  // ✅ One loader: KPIs + Today’s Queue
   async function loadDashboard() {
     setLoadingKpis(true);
     setLoadingQueue(true);
@@ -324,9 +336,7 @@ export default function ReceptionDashboard() {
         if (res.ok) {
           const list: DoctorOption[] = data.doctors || [];
           setDoctors(list);
-          if (list.length > 0) {
-            setForm((f) => ({ ...f, doctorId: list[0].id }));
-          }
+          if (list.length > 0) setForm((f) => ({ ...f, doctorId: list[0].id }));
         }
       } finally {
         setLoadingDoctors(false);
@@ -344,9 +354,8 @@ export default function ReceptionDashboard() {
         if (res.ok) {
           const modes: PaymentModeRow[] = data.modes || [];
           setPaymentModes(modes);
-          if (modes.length > 0) {
+          if (modes.length > 0)
             setForm((f) => ({ ...f, paymentMode: modes[0].code }));
-          }
         }
       } finally {
         setLoadingModes(false);
@@ -363,18 +372,20 @@ export default function ReceptionDashboard() {
   const validateForm = useCallback(
     (nextForm = form): FieldErrors => {
       const errs: FieldErrors = {};
-
       const name = nextForm.name.trim();
       const phoneDigits = digitsOnly(nextForm.phone);
       const fee = Number(nextForm.consultingFee);
 
       if (!name) errs.name = "Name is required.";
-
       if (phoneDigits && phoneDigits.length !== 10) {
         errs.phone = "Enter a valid 10-digit phone number.";
       }
-
       if (!nextForm.doctorId) errs.doctorId = "Please select a doctor.";
+
+      if (!nextForm.visitDate) errs.visitDate = "Visit date is required.";
+      const today = new Date().toISOString().slice(0, 10);
+      if (nextForm.visitDate > today)
+        errs.visitDate = "Visit date cannot be in the future.";
 
       if (nextForm.consultingFee === "")
         errs.consultingFee = "Fee is required.";
@@ -384,7 +395,6 @@ export default function ReceptionDashboard() {
         errs.consultingFee = "Fee cannot be 0 unless Waived.";
 
       if (!nextForm.paymentMode) errs.paymentMode = "Select payment mode.";
-
       return errs;
     },
     [form]
@@ -401,11 +411,85 @@ export default function ReceptionDashboard() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ queueEntryId, status }),
     });
-
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error || "Failed to change status.");
+    await loadDashboard();
+  }
 
-    await loadDashboard(); // refresh queue + KPIs
+  async function fetchPrefillByPatientCode(patientCode: string) {
+    const res = await fetch(
+      `/api/reception/patients/${encodeURIComponent(patientCode)}/prefill`,
+      { cache: "no-store" }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || "Failed to fetch patient.");
+
+    setForm((f) => ({
+      ...f,
+      name: data.patient?.name ?? "",
+      phone: (data.patient?.phone ?? "").replace(/\D+/g, ""),
+      doctorId: data.latest?.doctor?.id ?? f.doctorId,
+    }));
+
+    if (data.latest?.referral?.id) {
+      setReferral({
+        id: data.latest.referral.id,
+        name: data.latest.referral.name,
+      });
+    } else {
+      setReferral(null);
+    }
+
+    setFormSuccess(
+      `Fetched patient ${patientCode}. You can edit and register.`
+    );
+  }
+
+  async function handleFetchPatient() {
+    const q = prefillQuery.trim();
+    setPrefillError(null);
+    setFormSuccess(null);
+
+    if (!q) {
+      setPrefillError("Enter Patient ID / Name / Phone to fetch.");
+      return;
+    }
+
+    // ✅ Clear input immediately after click (requested)
+    setPrefillQuery("");
+
+    setPrefillLoading(true);
+    try {
+      const res = await fetch(
+        `/api/reception/patients/search?q=${encodeURIComponent(q)}`,
+        { cache: "no-store" }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Search failed.");
+
+      const hits = (data.hits || []) as {
+        patientCode: string;
+        name: string;
+        phone: string | null;
+      }[];
+
+      if (hits.length === 0) {
+        setPrefillError("No matching patient found. You can register as new.");
+        return;
+      }
+
+      if (hits.length === 1) {
+        await fetchPrefillByPatientCode(hits[0].patientCode);
+        return;
+      }
+
+      setPrefillHits(hits);
+      setShowPickPatient(true);
+    } catch (e: unknown) {
+      setPrefillError(e instanceof Error ? e.message : "Fetch failed.");
+    } finally {
+      setPrefillLoading(false);
+    }
   }
 
   async function submitQuickRegistration(e: React.FormEvent) {
@@ -424,21 +508,20 @@ export default function ReceptionDashboard() {
     setSubmitting(true);
     try {
       const name = form.name.trim();
-      const phone = digitsOnly(form.phone).slice(0, 10); // send clean
+      const phone = digitsOnly(form.phone).slice(0, 10);
       const fee = Number(form.consultingFee);
 
       const res = await fetch("/api/reception/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          visitDate: form.visitDate,
           name,
           phone,
           doctorId: form.doctorId,
           consultingFee: fee,
           paymentMode: form.paymentMode,
           payStatus: form.payStatus,
-
-          // ✅ IMPORTANT: send referralpersonId properly
           referralId: referral?.id ?? null,
         }),
       });
@@ -449,21 +532,25 @@ export default function ReceptionDashboard() {
         return;
       }
 
-      setFormSuccess("Patient registered and added to today’s queue.");
-      setForm((f) => ({ ...f, name: "", phone: "", consultingFee: "" }));
+      setFormSuccess("Patient registered and added to today&apos;s queue.");
+      setForm((f) => ({
+        ...f,
+        visitDate: new Date().toISOString().slice(0, 10),
+        name: "",
+        phone: "",
+        consultingFee: "",
+      }));
       setReferral(null);
+
       if (data?.visitId) {
         router.push(`/reception/bill/${data.visitId}`);
-        // window.open(
-        //   `/reception/bill/${data.visitId}`,
-        //   "_blank",
-        //   "noopener,noreferrer"
-        // );
       } else {
         console.error("Register API did not return visitId", data);
       }
-      // ✅ Refresh KPIs + queue from DB (multi-receptionist safe)
-      await loadDashboard();
+
+      if (data?.queued) {
+        await loadDashboard();
+      }
     } catch {
       setFormError("Network error. Please try again.");
     } finally {
@@ -479,6 +566,7 @@ export default function ReceptionDashboard() {
 
     setForm((f) => ({
       ...f,
+      visitDate: new Date().toISOString().slice(0, 10),
       name: "",
       phone: "",
       consultingFee: "",
@@ -486,11 +574,6 @@ export default function ReceptionDashboard() {
       doctorId: doctors.length > 0 ? doctors[0].id : 0,
       paymentMode: paymentModes.length > 0 ? paymentModes[0].code : "",
     }));
-  }
-
-  function toPayStatus(v: string): PayStatus {
-    if (v === "ACCEPTED" || v === "PENDING" || v === "WAIVED") return v;
-    return "ACCEPTED";
   }
 
   return (
@@ -503,12 +586,11 @@ export default function ReceptionDashboard() {
               Reception Dashboard
             </h1>
             <p className="text-sm mt-1 text-[#646179]">
-              Today’s queue, quick registration, patient lookup, billing and
-              reports.
+              Today&apos;s queue, quick registration, patient lookup, billing
+              and reports.
             </p>
           </div>
 
-          {/* Quick actions */}
           <div className="flex flex-wrap gap-2">
             <Link
               href="/reception/register"
@@ -516,6 +598,7 @@ export default function ReceptionDashboard() {
             >
               ➕ Register Patient
             </Link>
+
             <div className="relative">
               <button
                 type="button"
@@ -650,10 +733,280 @@ export default function ReceptionDashboard() {
           />
         </div>
 
-        {/* Queue + Quick Registration */}
-        <div className="mt-6 grid grid-cols-1 lg:grid-cols-12 gap-5 w-full">
-          {/* LEFT: Today’s Queue */}
-          <div className="lg:col-span-7 w-full rounded-2xl border bg-white shadow-sm">
+        {/* ✅ NEW LAYOUT: Quick OPD Registration on top (compact), Queue below */}
+        <div className="mt-6 grid grid-cols-1 gap-5">
+          {/* Quick Registration */}
+          <div className="rounded-2xl border shadow-sm bg-[var(--form-bg)] border-[var(--form-border)]">
+            {/* Header row with Fetch on RHS */}
+            <div className="p-4 border-b bg-[var(--panel-bg)]/60 border-[var(--form-border)]">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-[#1f1f1f]">
+                    Quick OPD Patient Registration
+                  </h2>
+                  <p className="text-sm text-[#646179]">
+                    Fast registration for walk-in patients
+                  </p>
+                </div>
+
+                {/* ✅ Fetch Repeat Patient (compact, top-right) */}
+                <div className="w-full md:w-auto">
+                  <div className="text-sm font-medium text-slate-600 mb-2">
+                    Fetch Repeat Patient
+                  </div>
+                  <div className="flex gap-2 w-full md:w-[420px]">
+                    <input
+                      className={inputClass}
+                      placeholder="Patient ID / Name / Phone"
+                      value={prefillQuery}
+                      onChange={(e) => {
+                        setPrefillQuery(e.target.value);
+                        setPrefillError(null);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleFetchPatient}
+                      disabled={prefillLoading}
+                      className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                    >
+                      {prefillLoading ? "Fetching..." : "Fetch"}
+                    </button>
+                  </div>
+
+                  {prefillError && (
+                    <div className="mt-1 text-xs text-red-600">
+                      {prefillError}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4">
+              <form onSubmit={submitQuickRegistration} className="space-y-3">
+                {formError && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-sm text-red-700">
+                    {formError}
+                  </div>
+                )}
+
+                {/* ✅ Row 1: Name | Phone | Referred By */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <FormField label="Visit Date" error={fieldErrors.visitDate}>
+                    <input
+                      type="date"
+                      className={inputClass}
+                      value={form.visitDate}
+                      onChange={(e) => {
+                        setForm((f) => ({ ...f, visitDate: e.target.value }));
+                        setFieldErrors((prev) => ({
+                          ...prev,
+                          visitDate: undefined,
+                        }));
+                      }}
+                      onBlur={() => setFieldErrors(validateForm())}
+                    />
+                  </FormField>
+
+                  <FormField label="Name" error={fieldErrors.name}>
+                    <input
+                      className={inputClass}
+                      placeholder="Patient name"
+                      value={form.name}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setForm((f) => ({ ...f, name: v }));
+                        setFieldErrors((prev) => ({
+                          ...prev,
+                          name: undefined,
+                        }));
+                      }}
+                      onBlur={() => setFieldErrors(validateForm())}
+                    />
+                  </FormField>
+
+                  <FormField label="Phone" error={fieldErrors.phone}>
+                    <input
+                      className={inputClass}
+                      placeholder="Mobile number (Optional)"
+                      value={formatPhoneUI(form.phone)}
+                      onChange={(e) => {
+                        const digits = digitsOnly(e.target.value).slice(0, 10);
+                        setForm((f) => ({ ...f, phone: digits }));
+                        setFieldErrors((prev) => ({
+                          ...prev,
+                          phone: undefined,
+                        }));
+                      }}
+                      onBlur={() => setFieldErrors(validateForm())}
+                    />
+                  </FormField>
+
+                  <FormField label="Referred By">
+                    <ReferralComboBox value={referral} onChange={setReferral} />
+                  </FormField>
+                </div>
+
+                {/* ✅ Row 2: Doctor | Fee | Payment Mode | Payment Status */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <FormField
+                    label={
+                      <div className="flex items-center justify-between">
+                        <span>Consulting Doctor</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowAddDoctor(true)}
+                          className="group flex items-center rounded-md text-sm font-medium text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-all duration-200"
+                        >
+                          <svg
+                            xmlns="http://www.w3.org"
+                            className="w-4 h-4 text-red-400 group-hover:text-blue-500"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M12 4v16m8-8H4"
+                            />
+                          </svg>
+                          Add Doctor
+                        </button>
+                      </div>
+                    }
+                    error={fieldErrors.doctorId}
+                  >
+                    <select
+                      className={selectClass}
+                      value={form.doctorId}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          doctorId: Number(e.target.value),
+                        }))
+                      }
+                      disabled={loadingDoctors || doctors.length === 0}
+                    >
+                      {doctors.length === 0 ? (
+                        <option value={0}>No doctors</option>
+                      ) : (
+                        doctors.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.full_name}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </FormField>
+
+                  <FormField
+                    label="Consulting Fee"
+                    error={fieldErrors.consultingFee}
+                  >
+                    <input
+                      className={inputClass}
+                      placeholder="Amount"
+                      value={form.consultingFee}
+                      onChange={(e) => {
+                        const v = e.target.value.replace(/[^0-9.]/g, "");
+                        setForm((f) => ({ ...f, consultingFee: v }));
+                        setFieldErrors((prev) => ({
+                          ...prev,
+                          consultingFee: undefined,
+                        }));
+                      }}
+                      onBlur={() => setFieldErrors(validateForm())}
+                    />
+                  </FormField>
+
+                  <FormField
+                    label="Payment Mode"
+                    error={fieldErrors.paymentMode}
+                  >
+                    <select
+                      className={selectClass}
+                      value={form.paymentMode}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, paymentMode: e.target.value }))
+                      }
+                      disabled={loadingModes || paymentModes.length === 0}
+                    >
+                      {paymentModes.length === 0 ? (
+                        <option value="">No payment modes</option>
+                      ) : (
+                        paymentModes.map((m) => (
+                          <option key={m.code} value={m.code}>
+                            {m.display_name}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </FormField>
+
+                  <FormField label="Payment Status">
+                    <select
+                      className={selectClass}
+                      value={form.payStatus}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          payStatus: toPayStatus(e.target.value),
+                        }))
+                      }
+                    >
+                      <option value="ACCEPTED">Accepted</option>
+                      <option value="PENDING">Pending</option>
+                      <option value="WAIVED">Waived</option>
+                    </select>
+                  </FormField>
+                </div>
+
+                <AddDoctorModal
+                  open={showAddDoctor}
+                  onClose={() => setShowAddDoctor(false)}
+                  onAdded={(d) => {
+                    setDoctors((prev) =>
+                      [...prev, d].sort((a, b) =>
+                        a.full_name.localeCompare(b.full_name)
+                      )
+                    );
+                    setForm((f) => ({ ...f, doctorId: d.id }));
+                  }}
+                />
+
+                {/* ✅ Buttons aligned like requested */}
+                <div className="flex items-center justify-end gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={resetQuickForm}
+                    disabled={submitting}
+                    className="rounded-lg border bg-white px-5 py-2 text-sm font-medium hover:bg-gray-50 disabled:opacity-60"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={submitting || !isFormValid}
+                    className="rounded-lg bg-[#00966D] px-6 py-2 text-sm font-medium text-white hover:bg-[#007f5c] disabled:opacity-60 disabled:hover:bg-[#00966D]"
+                  >
+                    {submitting ? "Registering..." : "➕ Register Patient"}
+                  </button>
+                </div>
+
+                {formSuccess && (
+                  <div className="rounded-lg border border-green-200 bg-green-50 px-2.5 py-1.5 text-sm text-green-700">
+                    {formSuccess}
+                  </div>
+                )}
+              </form>
+            </div>
+          </div>
+
+          {/* Today’s Queue */}
+          <div className="w-full rounded-2xl border bg-white shadow-sm">
             <div className="p-4 flex items-center justify-between border-b">
               <div>
                 <h2 className="text-lg font-semibold text-[#1f1f1f]">
@@ -664,15 +1017,13 @@ export default function ReceptionDashboard() {
                 </p>
               </div>
 
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={loadDashboard}
-                  className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50"
-                >
-                  {loadingQueue ? "Refreshing…" : "🔄 Refresh"}
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={loadDashboard}
+                className="rounded-lg border px-2.5 py-1.5 text-sm hover:bg-gray-50"
+              >
+                {loadingQueue ? "Refreshing…" : "🔄 Refresh"}
+              </button>
             </div>
 
             <div className="p-4 overflow-x-auto">
@@ -680,7 +1031,10 @@ export default function ReceptionDashboard() {
                 dense
                 columns={queueColumns}
                 rows={queueRows}
-                getRowKey={(r) => r.token}
+                emptyText={
+                  loadingQueue ? "Loading..." : "No patients in queue."
+                }
+                getRowKey={(r) => r.queueEntryId}
                 groupedActions={(row) => [
                   {
                     items: [
@@ -719,7 +1073,7 @@ export default function ReceptionDashboard() {
                       {
                         label: "View Patient Data",
                         onClick: () =>
-                          router.push(`/reception/patients/${row.patientDbId}`),
+                          router.push(`/patients/${row.patientDbId}`),
                       },
                       {
                         label: "Generate Bill",
@@ -735,204 +1089,14 @@ export default function ReceptionDashboard() {
               />
 
               <div className="mt-3 text-xs text-[#646179]">
-                Tip: Use the action menu to change status, generate bill, or
-                view details.
+                Tip: Use the action menu to change status, edit patient, or
+                generate bill.
               </div>
-            </div>
-          </div>
-
-          {/* RIGHT: Quick Registration */}
-          <div className="lg:col-span-5 w-full rounded-2xl border bg-[#F9FAFB] shadow-sm">
-            <div className="p-4 border-b bg-white/60">
-              <h2 className="text-lg font-semibold text-[#1f1f1f]">
-                Quick OPD Patient Registration
-              </h2>
-              <p className="text-sm text-[#646179]">
-                Fast registration for walk-in patients
-              </p>
-            </div>
-
-            <div className="p-4">
-              <form onSubmit={submitQuickRegistration} className="space-y-4">
-                {formError && (
-                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                    {formError}
-                  </div>
-                )}
-                <FormField label="Name" error={fieldErrors.name}>
-                  <input
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
-                    placeholder="Patient name"
-                    value={form.name}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setForm((f) => ({ ...f, name: v }));
-                      setFieldErrors((prev) => ({ ...prev, name: undefined }));
-                    }}
-                    onBlur={() => setFieldErrors(validateForm())}
-                  />
-                </FormField>
-
-                <FormField label="Referred By">
-                  <ReferralComboBox value={referral} onChange={setReferral} />
-                </FormField>
-
-                <FormField label="Phone" error={fieldErrors.phone}>
-                  <input
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
-                    placeholder="Mobile number (Optional)"
-                    value={formatPhoneUI(form.phone)}
-                    onChange={(e) => {
-                      const digits = digitsOnly(e.target.value).slice(0, 10);
-                      setForm((f) => ({ ...f, phone: digits }));
-                      setFieldErrors((prev) => ({ ...prev, phone: undefined }));
-                    }}
-                    onBlur={() => setFieldErrors(validateForm())}
-                  />
-                </FormField>
-
-                <FormField
-                  label={
-                    <div className="flex items-center justify-between">
-                      <span>Consulting Doctor</span>
-                      <button
-                        type="button"
-                        className="text-sm text-blue-600 hover:underline"
-                        onClick={() => setShowAddDoctor(true)}
-                      >
-                        ➕ Add Doctor
-                      </button>
-                    </div>
-                  }
-                  error={fieldErrors.doctorId}
-                >
-                  <select
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
-                    value={form.doctorId}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        doctorId: Number(e.target.value),
-                      }))
-                    }
-                    disabled={loadingDoctors || doctors.length === 0}
-                  >
-                    {doctors.length === 0 ? (
-                      <option value={0}>No doctors</option>
-                    ) : (
-                      doctors.map((d) => (
-                        <option key={d.id} value={d.id}>
-                          {d.full_name}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </FormField>
-
-                <AddDoctorModal
-                  open={showAddDoctor}
-                  onClose={() => setShowAddDoctor(false)}
-                  onAdded={(d) => {
-                    setDoctors((prev) =>
-                      [...prev, d].sort((a, b) =>
-                        a.full_name.localeCompare(b.full_name)
-                      )
-                    );
-                    setForm((f) => ({ ...f, doctorId: d.id }));
-                  }}
-                />
-
-                <FormField
-                  label="Consulting Fee"
-                  error={fieldErrors.consultingFee}
-                >
-                  <input
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
-                    placeholder="Amount"
-                    value={form.consultingFee}
-                    onChange={(e) => {
-                      const v = e.target.value.replace(/[^0-9.]/g, "");
-                      setForm((f) => ({ ...f, consultingFee: v }));
-                      setFieldErrors((prev) => ({
-                        ...prev,
-                        consultingFee: undefined,
-                      }));
-                    }}
-                    onBlur={() => setFieldErrors(validateForm())}
-                  />
-                </FormField>
-
-                <FormField label="Payment Mode" error={fieldErrors.paymentMode}>
-                  <select
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
-                    value={form.paymentMode}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, paymentMode: e.target.value }))
-                    }
-                    disabled={loadingModes || paymentModes.length === 0}
-                  >
-                    {paymentModes.length === 0 ? (
-                      <option value="">No payment modes</option>
-                    ) : (
-                      paymentModes.map((m) => (
-                        <option key={m.code} value={m.code}>
-                          {m.display_name}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </FormField>
-
-                <FormField label="Payment Status">
-                  <select
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
-                    value={form.payStatus}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        payStatus: toPayStatus(e.target.value),
-                      }))
-                    }
-                  >
-                    <option value="ACCEPTED">Accepted</option>
-                    <option value="PENDING">Pending</option>
-                    <option value="WAIVED">Waived</option>
-                  </select>
-                </FormField>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={resetQuickForm}
-                    disabled={submitting}
-                    className="w-full rounded-lg border bg-white py-2.5 text-sm font-medium hover:bg-gray-50 disabled:opacity-60"
-                  >
-                    Clear
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={submitting || !isFormValid}
-                    className="w-full rounded-lg bg-[#00966D] py-2.5 text-sm font-medium text-white hover:bg-[#007f5c] disabled:opacity-60 disabled:hover:bg-[#00966D]"
-                  >
-                    {submitting ? "Registering..." : "➕ Register Patient"}
-                  </button>
-                </div>
-                {formSuccess && (
-                  <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
-                    {formSuccess}
-                  </div>
-                )}
-
-                <div className="text-xs text-[#646179]">
-                  Registration will add the patient directly to today&apos;s
-                  queue.
-                </div>
-              </form>
             </div>
           </div>
         </div>
 
-        {/* Patient Lookup (Full Width) - static for now */}
+        {/* Patient Lookup */}
         <div className="mt-8 rounded-2xl border bg-white shadow-sm">
           <div className="p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between border-b">
             <div>
@@ -947,12 +1111,13 @@ export default function ReceptionDashboard() {
 
             <div className="flex gap-2 w-full md:w-auto">
               <input
-                className="w-full md:w-72 rounded-lg border px-3 py-2 text-sm"
+                className={inputClass}
                 placeholder="Search by name / phone / patient id"
                 value={patientSearch}
                 onChange={(e) => setPatientSearch(e.target.value)}
               />
               <button
+                type="button"
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
                 onClick={() => {
                   setPatientPage(1);
@@ -965,6 +1130,12 @@ export default function ReceptionDashboard() {
           </div>
 
           <div className="p-4 overflow-x-auto">
+            {patientError && (
+              <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-sm text-red-700">
+                {patientError}
+              </div>
+            )}
+
             <DataTable
               columns={patientColumns}
               rows={patientRows}
@@ -983,17 +1154,94 @@ export default function ReceptionDashboard() {
             />
 
             <div className="mt-3 text-xs text-[#646179]">
-              Tip: Use actions to generate bills, view reports, or open
-              consultation summary.
+              Tip: Use actions to open the patient summary.
             </div>
-            {patientError && (
-              <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                {patientError}
-              </div>
-            )}
           </div>
         </div>
       </div>
+
+      {/* Pick patient modal */}
+      {showPickPatient && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-2xl rounded-2xl border bg-white shadow-lg">
+            <div className="flex items-center justify-between border-b px-4 py-3">
+              <div>
+                <div className="text-sm font-semibold text-[#1f1f1f]">
+                  Select Patient
+                </div>
+                <div className="text-xs text-[#646179]">
+                  Multiple matches found. Choose the correct patient to prefill.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg border bg-white px-3 py-1.5 text-sm hover:bg-gray-50"
+                onClick={() => setShowPickPatient(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="p-4">
+              <div className="w-full overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-[#646179]">
+                    <tr className="border-b">
+                      <th className="px-3 py-2 text-left font-medium">
+                        Patient ID
+                      </th>
+                      <th className="px-3 py-2 text-left font-medium">Name</th>
+                      <th className="px-3 py-2 text-left font-medium">Phone</th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Action
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {prefillHits.map((h) => (
+                      <tr
+                        key={h.patientCode}
+                        className="border-b last:border-b-0"
+                      >
+                        <td className="px-3 py-2 font-medium text-[#1f1f1f]">
+                          {h.patientCode}
+                        </td>
+                        <td className="px-3 py-2 text-[#1f1f1f]">{h.name}</td>
+                        <td className="px-3 py-2 text-[#646179]">
+                          {h.phone ?? "—"}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            type="button"
+                            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                            onClick={async () => {
+                              setShowPickPatient(false);
+                              setPrefillLoading(true);
+                              try {
+                                await fetchPrefillByPatientCode(h.patientCode);
+                              } catch (e: unknown) {
+                                setPrefillError(
+                                  e instanceof Error
+                                    ? e.message
+                                    : "Prefill failed."
+                                );
+                              } finally {
+                                setPrefillLoading(false);
+                              }
+                            }}
+                          >
+                            Select
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1002,3 +1250,12 @@ function toPayStatus(v: string): PayStatus {
   if (v === "ACCEPTED" || v === "PENDING" || v === "WAIVED") return v;
   return "ACCEPTED";
 }
+
+const inputClass =
+  "w-full rounded-lg border px-3 py-2 text-sm transition-all duration-200 " +
+  "bg-white border-slate-200 text-slate-900 " + // Soft border and dark text
+  "placeholder:text-slate-400 " +
+  "focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500";
+
+const selectClass =
+  "w-full rounded-lg border px-3 py-2 text-sm bg-[var(--input-bg)] border-[var(--input-border)] text-[var(--input-text)] focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]";

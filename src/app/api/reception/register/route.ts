@@ -31,6 +31,7 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json()) as {
+    visitDate?: string; // YYYY-MM-DD
     name?: string;
     phone?: string;
     referralId?: string | null;
@@ -40,6 +41,7 @@ export async function POST(req: Request) {
     payStatus?: "ACCEPTED" | "PENDING" | "WAIVED";
   };
 
+  const visitDate = String(body.visitDate || "").trim();
   const name = (body.name || "").trim();
   const phoneRaw = (body.phone || "").trim();
   const phoneClean = phoneRaw ? phoneRaw.replace(/\s+/g, "") : null;
@@ -54,6 +56,7 @@ export async function POST(req: Request) {
       : Number(body.consultingFee);
 
   console.log("🔎 Register payload:", {
+    visitDate,
     name,
     phoneClean,
     referralId,
@@ -64,6 +67,21 @@ export async function POST(req: Request) {
   });
 
   // --- Validation ---
+  if (!visitDate || !/^\d{4}-\d{2}-\d{2}$/.test(visitDate)) {
+    return NextResponse.json(
+      { error: "Visit date is required." },
+      { status: 400 }
+    );
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  if (visitDate > today) {
+    return NextResponse.json(
+      { error: "Visit date cannot be in the future." },
+      { status: 400 }
+    );
+  }
+
   if (!name)
     return NextResponse.json({ error: "Name is required." }, { status: 400 });
 
@@ -197,7 +215,7 @@ export async function POST(req: Request) {
          :branch_id,
          :doctor_id,
          :referralperson_id,
-         CURDATE()
+         :visit_date
        )`,
       {
         patient_id: patientId,
@@ -205,29 +223,37 @@ export async function POST(req: Request) {
         branch_id: me.branchId,
         doctor_id: doctorId,
         referralperson_id: referralId,
+        visit_date: visitDate,
       }
     );
 
     const visitId = visitIns.insertId;
 
     // 6) Generate token (LOCKED)
-    const [tokenRows] = await conn.execute<MaxTokenRow[]>(
-      `SELECT COALESCE(MAX(q.token_no), 0) AS max_token
+    const today = new Date().toISOString().slice(0, 10);
+    const isToday = visitDate === today;
+
+    let nextToken: number | null = null;
+
+    if (isToday) {
+      const [tokenRows] = await conn.execute<MaxTokenRow[]>(
+        `SELECT COALESCE(MAX(q.token_no), 0) AS max_token
        FROM queue_entries q
        JOIN visits v ON v.id = q.visit_id
        WHERE v.branch_id = :branch_id
          AND v.visit_date = CURDATE()
        FOR UPDATE`,
-      { branch_id: me.branchId }
-    );
+        { branch_id: me.branchId }
+      );
 
-    const nextToken = Number(tokenRows[0]?.max_token ?? 0) + 1;
+      nextToken = Number(tokenRows[0]?.max_token ?? 0) + 1;
 
-    await conn.execute(
-      `INSERT INTO queue_entries (visit_id, token_no, status)
+      await conn.execute(
+        `INSERT INTO queue_entries (visit_id, token_no, status)
        VALUES (:visit_id, :token_no, 'WAITING')`,
-      { visit_id: visitId, token_no: nextToken }
-    );
+        { visit_id: visitId, token_no: nextToken }
+      );
+    }
 
     // 7) Validate payment mode
     const [modeRows] = await conn.execute<ModeRow[]>(
@@ -262,13 +288,17 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ok: true,
       visitId,
-      queueRow: {
-        token: nextToken,
-        patientId: patientCode,
-        name,
-        phone: phoneClean ?? "",
-        status: "WAITING",
-      },
+      queued: isToday,
+      queueRow: isToday
+        ? {
+            token: nextToken,
+            patientId: patientCode,
+            visitId,
+            name,
+            phone: phoneClean ?? "",
+            status: "WAITING",
+          }
+        : null,
     });
   } catch (e: unknown) {
     await conn.rollback();
