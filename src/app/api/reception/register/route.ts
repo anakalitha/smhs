@@ -230,12 +230,17 @@ export async function POST(req: Request) {
     const visitId = visitIns.insertId;
 
     // 6) Generate token (LOCKED)
-    const today = new Date().toISOString().slice(0, 10);
-    const isToday = visitDate === today;
+    const today = todayLocalYYYYMMDD();
+    if (visitDate > today) {
+      return NextResponse.json(
+        { error: "Visit date cannot be in the future." },
+        { status: 400 }
+      );
+    }
 
     let nextToken: number | null = null;
 
-    if (isToday) {
+    if (today) {
       const [tokenRows] = await conn.execute<MaxTokenRow[]>(
         `SELECT COALESCE(MAX(q.token_no), 0) AS max_token
        FROM queue_entries q
@@ -288,8 +293,8 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ok: true,
       visitId,
-      queued: isToday,
-      queueRow: isToday
+      queued: today,
+      queueRow: today
         ? {
             token: nextToken,
             patientId: patientCode,
@@ -310,4 +315,12 @@ export async function POST(req: Request) {
   } finally {
     conn.release();
   }
+}
+
+function todayLocalYYYYMMDD() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }

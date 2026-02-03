@@ -1,369 +1,154 @@
-"use client";
+import { redirect } from "next/navigation";
+import type { RowDataPacket } from "mysql2/promise";
+import { db } from "@/lib/db";
+import { getCurrentUser } from "@/lib/session";
+import PatientSummaryClient from "./PatientSummaryClient";
 
-import { useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
-import DataTable, { Column } from "@/components/ui/DataTable";
+type PatientHeaderRow = RowDataPacket & {
+  patientCode: string;
+  name: string;
+  phone: string | null;
+  orgCode: string;
+  branchCode: string;
+  lastVisit: string | null;
+  totalVisits: number;
+  pendingAmount: number;
+};
 
-type VisitStatus = "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
-type PayStatus = "ACCEPTED" | "PENDING" | "WAIVED";
-
-type VisitRow = {
+type VisitRow = RowDataPacket & {
   visitId: number;
   visitDate: string; // YYYY-MM-DD
   doctor: string;
-  status: VisitStatus;
+  status: "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
   amount: number;
-  payStatus: PayStatus;
+  payStatus: "ACCEPTED" | "PENDING" | "WAIVED";
   paymentMode: string;
 };
 
-function formatINR(n: number) {
-  return n.toLocaleString("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
+export default async function PatientSummaryPage({
+  params,
+}: {
+  params: { patientId: string };
+}) {
+  const me = await getCurrentUser();
+  if (!me) redirect("/login");
+
+  console.log("🧾 PatientSummary getCurrentUser:", {
+    id: me.id,
+    roles: me.roles,
+    organizationId: me.organizationId,
+    branchId: me.branchId,
   });
-}
 
-function Badge({
-  children,
-  tone = "gray",
-}: {
-  children: React.ReactNode;
-  tone?: "gray" | "green" | "yellow" | "red" | "blue";
-}) {
-  const cls =
-    tone === "green"
-      ? "bg-green-50 text-green-700 border-green-200"
-      : tone === "yellow"
-      ? "bg-yellow-50 text-yellow-700 border-yellow-200"
-      : tone === "red"
-      ? "bg-red-50 text-red-700 border-red-200"
-      : tone === "blue"
-      ? "bg-blue-50 text-blue-700 border-blue-200"
-      : "bg-gray-50 text-gray-700 border-gray-200";
+  // ✅ UNWRAP params (Next.js 16)
+  const { patientId } = await params;
+  const patientCode = String(patientId ?? "").trim();
 
-  return (
-    <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs ${cls}`}
-    >
-      {children}
-    </span>
-  );
-}
+  // ✅ Normalize IDs
+  const orgId = me.organizationId != null ? Number(me.organizationId) : NaN;
+  const branchId = me.branchId != null ? Number(me.branchId) : NaN;
 
-function SectionCard({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-2xl border bg-white shadow-sm">
-      <div className="border-b px-4 py-3">
-        <div className="text-sm font-semibold text-[#1f1f1f]">{title}</div>
-        {subtitle && (
-          <div className="text-xs text-[#646179] mt-0.5">{subtitle}</div>
-        )}
+  if (!patientCode) {
+    return <div className="p-6">Invalid patient id.</div>;
+  }
+
+  if (
+    !Number.isFinite(orgId) ||
+    orgId <= 0 ||
+    !Number.isFinite(branchId) ||
+    branchId <= 0
+  ) {
+    return (
+      <div className="p-6">
+        Invalid org/branch in session. Please logout and login again.
       </div>
-      <div className="p-4">{children}</div>
-    </div>
+    );
+  }
+
+  // ✅ Now your DB queries can use patientCode/orgId/branchId safely
+  const [phRows] = await db.execute<PatientHeaderRow[]>(
+    `
+    SELECT
+      p.patient_code AS patientCode,
+      p.full_name AS name,
+      p.phone AS phone,
+      o.code AS orgCode,
+      b.code AS branchCode,
+      MAX(v.visit_date) AS lastVisit,
+      COUNT(v.id) AS totalVisits,
+      COALESCE(SUM(CASE WHEN pay.pay_status = 'PENDING' THEN pay.amount ELSE 0 END), 0) AS pendingAmount
+    FROM patients p
+    JOIN visits v
+      ON v.patient_id = p.id
+     AND v.organization_id = :org
+     AND v.branch_id = :branch
+    JOIN organizations o ON o.id = v.organization_id
+    JOIN branches b ON b.id = v.branch_id
+    LEFT JOIN payments pay
+      ON pay.visit_id = v.id
+     AND pay.fee_type = 'CONSULTATION'
+    WHERE p.patient_code = :patientCode
+    GROUP BY p.patient_code, p.full_name, p.phone, o.code, b.code
+    LIMIT 1
+    `,
+    { org: orgId, branch: branchId, patientCode }
   );
-}
 
-export default function PatientSummaryPage() {
-  const router = useRouter();
-  const params = useParams<{ patientId: string }>();
-  const patientId = params.patientId;
+  if (phRows.length === 0) {
+    return <div className="p-6">Patient not found.</div>;
+  }
 
-  // ✅ Placeholder patient data (we will fetch from DB next)
-  const patient = {
-    patientCode: patientId,
-    name: "Patient Name",
-    phone: "—",
-    ageGender: "—",
-    branch: "SMNH / MCC",
-    lastVisit: "2026-02-02",
-    pending: 0,
-    totalVisits: 3,
-  };
+  const header = phRows[0];
 
-  // ✅ Placeholder visits (we will fetch from DB next)
-  const [visits] = useState<VisitRow[]>([
-    {
-      visitId: 7,
-      visitDate: "2026-02-02",
-      doctor: "Dr. Meera",
-      status: "DONE",
-      amount: 500,
-      payStatus: "ACCEPTED",
-      paymentMode: "CASH",
-    },
-    {
-      visitId: 6,
-      visitDate: "2026-02-01",
-      doctor: "Dr. Ravi",
-      status: "DONE",
-      amount: 500,
-      payStatus: "PENDING",
-      paymentMode: "UPI",
-    },
-    {
-      visitId: 5,
-      visitDate: "2026-01-28",
-      doctor: "Dr. Arjun",
-      status: "DONE",
-      amount: 500,
-      payStatus: "WAIVED",
-      paymentMode: "—",
-    },
-  ]);
-
-  const visitColumns: Column<VisitRow>[] = useMemo(
-    () => [
-      {
-        header: "Visit Date",
-        cell: (v) => <span className="text-[#1f1f1f]">{v.visitDate}</span>,
-        className: "w-[120px]",
-      },
-      {
-        header: "Doctor",
-        cell: (v) => <span className="text-[#1f1f1f]">{v.doctor}</span>,
-        className: "min-w-[160px]",
-      },
-      {
-        header: "Status",
-        cell: (v) => {
-          const tone =
-            v.status === "DONE"
-              ? "green"
-              : v.status === "IN_ROOM"
-              ? "blue"
-              : v.status === "NEXT"
-              ? "yellow"
-              : "gray";
-          return <Badge tone={tone as any}>{v.status}</Badge>;
-        },
-        className: "w-[120px]",
-      },
-      {
-        header: "Fee",
-        cell: (v) => (
-          <span className="text-[#1f1f1f] font-medium">
-            {formatINR(v.amount)}
-          </span>
-        ),
-        className: "w-[120px]",
-      },
-      {
-        header: "Pay Status",
-        cell: (v) => {
-          const tone =
-            v.payStatus === "ACCEPTED"
-              ? "green"
-              : v.payStatus === "PENDING"
-              ? "yellow"
-              : "red";
-          return <Badge tone={tone}>{v.payStatus}</Badge>;
-        },
-        className: "w-[130px]",
-      },
-      {
-        header: "Mode",
-        cell: (v) => <span className="text-[#646179]">{v.paymentMode}</span>,
-        className: "w-[110px]",
-      },
-    ],
-    []
+  // Visits list (latest first)
+  const [visitRows] = await db.execute<VisitRow[]>(
+    `
+    SELECT
+      v.id AS visitId,
+      v.visit_date AS visitDate,
+      d.full_name AS doctor,
+      COALESCE(q.status, 'WAITING') AS status,
+      COALESCE(pay.amount, 0) AS amount,
+      COALESCE(pay.pay_status, 'PENDING') AS payStatus,
+      COALESCE(pay.payment_mode, '—') AS paymentMode
+    FROM visits v
+    JOIN patients p ON p.id = v.patient_id
+    JOIN doctors d ON d.id = v.doctor_id
+    LEFT JOIN queue_entries q ON q.visit_id = v.id
+    LEFT JOIN payments pay
+      ON pay.visit_id = v.id
+     AND pay.fee_type = 'CONSULTATION'
+    WHERE v.organization_id = :org
+      AND v.branch_id = :branch
+      AND p.patient_code = :patientCode
+    ORDER BY v.visit_date DESC, v.id DESC
+    `,
+    { org: me.organizationId, branch: me.branchId, patientCode }
   );
 
   return (
-    <div className="min-h-[calc(100vh-120px)] bg-[#F2F2F2]">
-      <div className="p-6 max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="rounded-2xl border bg-white shadow-sm p-5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <div className="text-xs text-[#646179]">Patient Summary</div>
-              <div className="mt-1 flex flex-wrap items-center gap-3">
-                <h1 className="text-2xl font-semibold text-[#1f1f1f]">
-                  {patient.name}
-                </h1>
-                <Badge>{patient.patientCode}</Badge>
-                <Badge tone="blue">{patient.branch}</Badge>
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Badge>{patient.ageGender}</Badge>
-                <Badge>{patient.phone}</Badge>
-                <Badge tone="gray">Last visit: {patient.lastVisit}</Badge>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => router.back()}
-                className="rounded-lg border bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50"
-              >
-                ← Back
-              </button>
-
-              <button
-                type="button"
-                onClick={() => alert("Print Summary (later)")}
-                className="rounded-lg border bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50"
-              >
-                🖨️ Print Summary
-              </button>
-
-              <button
-                type="button"
-                onClick={() => alert("Create New Visit (later)")}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-              >
-                ➕ New Visit
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* KPI strip */}
-        <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <KpiMini title="Total Visits" value={String(patient.totalVisits)} />
-          <KpiMini title="Pending Dues" value={formatINR(patient.pending)} />
-          <KpiMini title="Last Visit" value={patient.lastVisit} />
-          <KpiMini title="Last Fee" value={formatINR(visits[0]?.amount ?? 0)} />
-        </div>
-
-        {/* Main layout */}
-        <div className="mt-6 grid grid-cols-1 lg:grid-cols-12 gap-5">
-          {/* LEFT */}
-          <div className="lg:col-span-4 space-y-5">
-            <SectionCard
-              title="Personal Details"
-              subtitle="Core patient info (will fetch from DB)"
-            >
-              <div className="space-y-2 text-sm">
-                <Row label="Full Name" value={patient.name} />
-                <Row label="Patient ID" value={patient.patientCode} />
-                <Row label="Age / Gender" value={patient.ageGender} />
-              </div>
-            </SectionCard>
-
-            <SectionCard
-              title="Contact"
-              subtitle="Phone and address (optional)"
-            >
-              <div className="space-y-2 text-sm">
-                <Row label="Phone" value={patient.phone} />
-                <Row label="Address" value="—" />
-              </div>
-            </SectionCard>
-
-            <SectionCard
-              title="Flags / Notes"
-              subtitle="Allergies, chronic conditions, remarks"
-            >
-              <div className="text-sm text-[#646179]">No flags added yet.</div>
-            </SectionCard>
-          </div>
-
-          {/* RIGHT */}
-          <div className="lg:col-span-8 space-y-5">
-            <SectionCard
-              title="Visits"
-              subtitle="Select a visit to generate bill, see consultation summary, tests, scans, pharmacy"
-            >
-              <DataTable
-                dense
-                columns={visitColumns}
-                rows={visits}
-                getRowKey={(r) => r.visitId}
-                groupedActions={(row) => [
-                  {
-                    items: [
-                      {
-                        label: "Consultation Summary",
-                        onClick: () =>
-                          alert(
-                            `Consultation Summary for visit ${row.visitId} (next)`
-                          ),
-                      },
-                      {
-                        label: "Generate Bill",
-                        onClick: () =>
-                          window.open(
-                            `/reception/bill/${row.visitId}`,
-                            "_blank",
-                            "noopener,noreferrer"
-                          ),
-                      },
-                    ],
-                  },
-                  {
-                    separator: true,
-                    items: [
-                      {
-                        label: "View Tests/Lab",
-                        onClick: () =>
-                          alert(`Tests/Lab for visit ${row.visitId} (later)`),
-                      },
-                      {
-                        label: "View Scans",
-                        onClick: () =>
-                          alert(`Scans for visit ${row.visitId} (later)`),
-                      },
-                      {
-                        label: "Pharmacy",
-                        onClick: () =>
-                          alert(`Pharmacy for visit ${row.visitId} (later)`),
-                      },
-                    ],
-                  },
-                ]}
-                emptyText="No visits found."
-              />
-
-              <div className="mt-3 text-xs text-[#646179]">
-                Tip: Use the action menu to generate the bill or open
-                consultation summary for a specific visit.
-              </div>
-            </SectionCard>
-
-            <SectionCard
-              title="Clinical Timeline"
-              subtitle="Notes, tests, scans, pharmacy (next)"
-            >
-              <div className="text-sm text-[#646179]">
-                We’ll add tabs here next: Consultation Notes • Lab • Scans •
-                Pharmacy.
-              </div>
-            </SectionCard>
-          </div>
-        </div>
-      </div>
-    </div>
+    <PatientSummaryClient
+      patient={{
+        patientCode: header.patientCode,
+        name: header.name,
+        phone: header.phone ?? "—",
+        branch: `${header.orgCode} / ${header.branchCode}`,
+        lastVisit: toYYYYMMDD(header.lastVisit),
+        pending: Number(header.pendingAmount ?? 0),
+        totalVisits: Number(header.totalVisits ?? 0),
+      }}
+      visits={visitRows.map((v) => ({
+        ...v,
+        visitDate: toYYYYMMDD(v.visitDate),
+        amount: Number(v.amount ?? 0),
+      }))}
+    />
   );
 }
 
-function KpiMini({ title, value }: { title: string; value: string }) {
-  return (
-    <div className="rounded-2xl border bg-white shadow-sm p-4">
-      <div className="text-sm text-[#646179]">{title}</div>
-      <div className="mt-1 text-xl font-semibold text-[#1f1f1f]">{value}</div>
-    </div>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-start justify-between gap-4">
-      <div className="text-[#646179]">{label}</div>
-      <div className="text-[#1f1f1f] font-medium text-right">{value}</div>
-    </div>
-  );
+function toYYYYMMDD(v: unknown): string {
+  if (!v) return "—";
+  if (typeof v === "string") return v.slice(0, 10);
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
 }

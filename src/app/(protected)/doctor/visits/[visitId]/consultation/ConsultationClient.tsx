@@ -1,0 +1,694 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+
+type OrderType = "SCAN" | "PAP_SMEAR" | "CTG";
+
+type LoadedData = {
+  visit: {
+    visitId: number;
+    visitDate: string;
+    patientCode: string;
+    patientName: string;
+  };
+  note: {
+    diagnosis: string | null;
+    investigation: string | null;
+    remarks: string | null;
+  } | null;
+  prescription: { prescriptionId: number; notes: string | null } | null;
+  prescriptionItems: Array<{
+    id: number;
+    medicine_name: string;
+    dosage: string | null;
+    morning: number;
+    afternoon: number;
+    night: number;
+    before_food: number;
+    duration_days: number | null;
+    instructions: string | null;
+    sort_order: number;
+  }>;
+  orders: Array<{
+    id: number;
+    order_type: OrderType;
+    details: string | null;
+    status: "ORDERED" | "BILLED" | "DONE" | "CANCELLED";
+  }>;
+};
+
+type RxItem = {
+  medicineName: string;
+  dosage: string;
+  morning: boolean;
+  afternoon: boolean;
+  night: boolean;
+  beforeFood: boolean;
+  durationDays: string;
+  instructions: string;
+  sortOrder: number;
+};
+
+function inputCls() {
+  return (
+    "w-full rounded-lg border px-3 py-2 text-sm bg-white border-slate-200 text-slate-900 " +
+    "placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+  );
+}
+
+function textAreaCls() {
+  return inputCls() + " min-h-[90px]";
+}
+
+function Toggle({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-sm text-slate-900">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="font-medium">{label}</span>
+    </label>
+  );
+}
+
+export default function ConsultationClient({ visitId }: { visitId: number }) {
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const [err, setErr] = useState<string | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
+
+  const [visit, setVisit] = useState<LoadedData["visit"] | null>(null);
+
+  const [diagnosis, setDiagnosis] = useState("");
+  const [investigation, setInvestigation] = useState("");
+  const [remarks, setRemarks] = useState("");
+
+  const [scanNeeded, setScanNeeded] = useState(false);
+  const [scanDetails, setScanDetails] = useState("");
+  const [papNeeded, setPapNeeded] = useState(false);
+  const [papDetails, setPapDetails] = useState("");
+  const [ctgNeeded, setCtgNeeded] = useState(false);
+  const [ctgDetails, setCtgDetails] = useState("");
+
+  const [rxNotes, setRxNotes] = useState("");
+  const [rxItems, setRxItems] = useState<RxItem[]>([]);
+
+  function hydrate(data: LoadedData) {
+    setVisit({
+      visitId: data.visit.visitId,
+      visitDate: data.visit.visitDate,
+      patientCode: data.visit.patientCode,
+      patientName: data.visit.patientName,
+    });
+
+    setDiagnosis(data.note?.diagnosis ?? "");
+    setInvestigation(data.note?.investigation ?? "");
+    setRemarks(data.note?.remarks ?? "");
+
+    const oScan = data.orders.find(
+      (o) => o.order_type === "SCAN" && o.status !== "CANCELLED"
+    );
+    const oPap = data.orders.find(
+      (o) => o.order_type === "PAP_SMEAR" && o.status !== "CANCELLED"
+    );
+    const oCtg = data.orders.find(
+      (o) => o.order_type === "CTG" && o.status !== "CANCELLED"
+    );
+
+    setScanNeeded(!!oScan);
+    setScanDetails(oScan?.details ?? "");
+    setPapNeeded(!!oPap);
+    setPapDetails(oPap?.details ?? "");
+    setCtgNeeded(!!oCtg);
+    setCtgDetails(oCtg?.details ?? "");
+
+    setRxNotes(data.prescription?.notes ?? "");
+
+    const mapped = (data.prescriptionItems || []).map((i) => ({
+      medicineName: i.medicine_name,
+      dosage: i.dosage ?? "",
+      morning: !!i.morning,
+      afternoon: !!i.afternoon,
+      night: !!i.night,
+      beforeFood: !!i.before_food,
+      durationDays: i.duration_days != null ? String(i.duration_days) : "",
+      instructions: i.instructions ?? "",
+      sortOrder: Number(i.sort_order ?? 0),
+    }));
+
+    setRxItems(mapped.length ? mapped : [blankRxItem(0)]);
+  }
+
+  function blankRxItem(sortOrder: number): RxItem {
+    return {
+      medicineName: "",
+      dosage: "",
+      morning: true,
+      afternoon: false,
+      night: true,
+      beforeFood: false,
+      durationDays: "",
+      instructions: "",
+      sortOrder,
+    };
+  }
+
+  async function load() {
+    setLoading(true);
+    setErr(null);
+    setOkMsg(null);
+    try {
+      const res = await fetch(`/api/doctor/visits/${visitId}/consultation`, {
+        cache: "no-store",
+      });
+
+      const data: unknown = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const msg = getErrorMessage(data) ?? "Failed to load consultation.";
+        setErr(msg);
+        return;
+      }
+
+      if (!isLoadedData(data)) {
+        setErr("Unexpected response from server.");
+        return;
+      }
+
+      hydrate(data);
+    } catch {
+      setErr("Network error.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!Number.isFinite(visitId) || visitId <= 0) {
+      setErr("Invalid visitId.");
+      setLoading(false);
+      return;
+    }
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visitId]);
+
+  const payload = useMemo(() => {
+    return {
+      diagnosis,
+      investigation,
+      remarks,
+      orders: {
+        scan: { needed: scanNeeded, details: scanDetails },
+        pap: { needed: papNeeded, details: papDetails },
+        ctg: { needed: ctgNeeded, details: ctgDetails },
+      },
+      prescription: {
+        notes: rxNotes,
+        items: rxItems.map((it, idx) => ({
+          medicineName: it.medicineName,
+          dosage: it.dosage || undefined,
+          morning: it.morning,
+          afternoon: it.afternoon,
+          night: it.night,
+          beforeFood: it.beforeFood,
+          durationDays: it.durationDays ? Number(it.durationDays) : null,
+          instructions: it.instructions || undefined,
+          sortOrder: Number.isFinite(it.sortOrder) ? it.sortOrder : idx,
+        })),
+      },
+    };
+  }, [
+    diagnosis,
+    investigation,
+    remarks,
+    scanNeeded,
+    scanDetails,
+    papNeeded,
+    papDetails,
+    ctgNeeded,
+    ctgDetails,
+    rxNotes,
+    rxItems,
+  ]);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    setOkMsg(null);
+
+    try {
+      const res = await fetch(`/api/doctor/visits/${visitId}/consultation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setErr(data?.error || "Save failed.");
+        return false;
+      }
+      setOkMsg("Saved.");
+      return true;
+    } catch {
+      setErr("Network error while saving.");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-[calc(100vh-120px)] bg-[#F2F2F2]">
+        <div className="p-6 max-w-5xl mx-auto">Loading…</div>
+      </div>
+    );
+  }
+
+  if (err && !visit) {
+    return (
+      <div className="min-h-[calc(100vh-120px)] bg-[#F2F2F2]">
+        <div className="p-6 max-w-5xl mx-auto">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            {err}
+          </div>
+          <button
+            className="mt-3 rounded-lg border bg-white px-4 py-2 text-sm hover:bg-gray-50"
+            onClick={() => router.back()}
+          >
+            ← Back
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-[calc(100vh-120px)] bg-[#F2F2F2]">
+      <div className="p-6 max-w-5xl mx-auto space-y-5">
+        {/* Header */}
+        <div className="rounded-2xl border bg-white shadow-sm p-5">
+          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+            <div>
+              <div className="text-xs text-slate-600">Consultation</div>
+              <div className="mt-1 text-xl font-semibold text-slate-900">
+                {visit?.patientName}{" "}
+                <span className="text-slate-500">({visit?.patientCode})</span>
+              </div>
+              <div className="mt-1 text-sm text-slate-600">
+                Visit Date: {visit?.visitDate}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="rounded-lg border bg-white px-4 py-2 text-sm hover:bg-gray-50"
+                onClick={() => router.push(`/patients/${visit?.patientCode}`)}
+              >
+                View Patient Summary
+              </button>
+
+              <button
+                className="rounded-lg border bg-white px-4 py-2 text-sm hover:bg-gray-50"
+                onClick={() => router.back()}
+              >
+                ← Back
+              </button>
+
+              <button
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                disabled={saving}
+                onClick={async () => {
+                  const ok = await save();
+                  if (ok) {
+                    window.open(
+                      `/doctor/visits/${visitId}/consultation/summary`,
+                      "_blank",
+                      "noopener,noreferrer"
+                    );
+                  }
+                }}
+              >
+                {saving ? "Saving…" : "Save + Summary"}
+              </button>
+
+              <button
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                disabled={saving}
+                onClick={async () => {
+                  const ok = await save();
+                  if (ok) {
+                    window.open(
+                      `/doctor/visits/${visitId}/consultation/prescription`,
+                      "_blank",
+                      "noopener,noreferrer"
+                    );
+                  }
+                }}
+              >
+                {saving ? "Saving…" : "Save + Prescription"}
+              </button>
+            </div>
+          </div>
+
+          {err && (
+            <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {err}
+            </div>
+          )}
+          {okMsg && (
+            <div className="mt-3 rounded-xl border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+              {okMsg}
+            </div>
+          )}
+        </div>
+
+        {/* Diagnosis / Investigation */}
+        <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <div className="text-sm font-medium text-slate-700 mb-2">
+                Diagnosis
+              </div>
+              <textarea
+                className={textAreaCls()}
+                value={diagnosis}
+                onChange={(e) => setDiagnosis(e.target.value)}
+              />
+            </div>
+            <div>
+              <div className="text-sm font-medium text-slate-700 mb-2">
+                Investigation
+              </div>
+              <textarea
+                className={textAreaCls()}
+                value={investigation}
+                onChange={(e) => setInvestigation(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div>
+            <div className="text-sm font-medium text-slate-700 mb-2">
+              Consultation Remarks
+            </div>
+            <textarea
+              className={textAreaCls()}
+              value={remarks}
+              onChange={(e) => setRemarks(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {/* Orders */}
+        <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-4">
+          <div className="text-sm font-semibold text-slate-900">Orders</div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="rounded-xl border bg-slate-50 p-3">
+              <Toggle
+                label="Scan"
+                checked={scanNeeded}
+                onChange={setScanNeeded}
+              />
+              <textarea
+                className={textAreaCls()}
+                placeholder="Scan details (type, region, notes)"
+                value={scanDetails}
+                onChange={(e) => setScanDetails(e.target.value)}
+                disabled={!scanNeeded}
+              />
+            </div>
+
+            <div className="rounded-xl border bg-slate-50 p-3">
+              <Toggle
+                label="PAP Smear"
+                checked={papNeeded}
+                onChange={setPapNeeded}
+              />
+              <textarea
+                className={textAreaCls()}
+                placeholder="PAP details"
+                value={papDetails}
+                onChange={(e) => setPapDetails(e.target.value)}
+                disabled={!papNeeded}
+              />
+            </div>
+
+            <div className="rounded-xl border bg-slate-50 p-3">
+              <Toggle label="CTG" checked={ctgNeeded} onChange={setCtgNeeded} />
+              <textarea
+                className={textAreaCls()}
+                placeholder="CTG details"
+                value={ctgDetails}
+                onChange={(e) => setCtgDetails(e.target.value)}
+                disabled={!ctgNeeded}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Prescription */}
+        <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-slate-900">
+              Prescription
+            </div>
+            <button
+              type="button"
+              className="rounded-lg border bg-white px-3 py-2 text-sm hover:bg-gray-50"
+              onClick={() => {
+                setRxItems((prev) => [...prev, blankRxItem(prev.length)]);
+              }}
+            >
+              ➕ Add Medicine
+            </button>
+          </div>
+
+          <div>
+            <div className="text-sm font-medium text-slate-700 mb-2">
+              Prescription Notes
+            </div>
+            <textarea
+              className={textAreaCls()}
+              value={rxNotes}
+              onChange={(e) => setRxNotes(e.target.value)}
+            />
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-600">
+                <tr className="border-b">
+                  <th className="px-2 py-2 text-left font-medium min-w-[220px]">
+                    Medicine
+                  </th>
+                  <th className="px-2 py-2 text-left font-medium min-w-[120px]">
+                    Dosage
+                  </th>
+                  <th className="px-2 py-2 text-center font-medium">M</th>
+                  <th className="px-2 py-2 text-center font-medium">A</th>
+                  <th className="px-2 py-2 text-center font-medium">N</th>
+                  <th className="px-2 py-2 text-center font-medium min-w-[120px]">
+                    Before food
+                  </th>
+                  <th className="px-2 py-2 text-left font-medium min-w-[120px]">
+                    Days
+                  </th>
+                  <th className="px-2 py-2 text-left font-medium min-w-[200px]">
+                    Instructions
+                  </th>
+                  <th className="px-2 py-2 text-right font-medium">Action</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {rxItems.map((it, idx) => (
+                  <tr key={idx} className="border-b last:border-b-0">
+                    <td className="px-2 py-2">
+                      <input
+                        className={inputCls()}
+                        value={it.medicineName}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setRxItems((prev) =>
+                            prev.map((x, i) =>
+                              i === idx ? { ...x, medicineName: v } : x
+                            )
+                          );
+                        }}
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        className={inputCls()}
+                        value={it.dosage}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setRxItems((prev) =>
+                            prev.map((x, i) =>
+                              i === idx ? { ...x, dosage: v } : x
+                            )
+                          );
+                        }}
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={it.morning}
+                        onChange={(e) =>
+                          setRxItems((prev) =>
+                            prev.map((x, i) =>
+                              i === idx
+                                ? { ...x, morning: e.target.checked }
+                                : x
+                            )
+                          )
+                        }
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={it.afternoon}
+                        onChange={(e) =>
+                          setRxItems((prev) =>
+                            prev.map((x, i) =>
+                              i === idx
+                                ? { ...x, afternoon: e.target.checked }
+                                : x
+                            )
+                          )
+                        }
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={it.night}
+                        onChange={(e) =>
+                          setRxItems((prev) =>
+                            prev.map((x, i) =>
+                              i === idx ? { ...x, night: e.target.checked } : x
+                            )
+                          )
+                        }
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={it.beforeFood}
+                        onChange={(e) =>
+                          setRxItems((prev) =>
+                            prev.map((x, i) =>
+                              i === idx
+                                ? { ...x, beforeFood: e.target.checked }
+                                : x
+                            )
+                          )
+                        }
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        className={inputCls()}
+                        inputMode="numeric"
+                        value={it.durationDays}
+                        onChange={(e) => {
+                          const v = e.target.value.replace(/[^0-9]/g, "");
+                          setRxItems((prev) =>
+                            prev.map((x, i) =>
+                              i === idx ? { ...x, durationDays: v } : x
+                            )
+                          );
+                        }}
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        className={inputCls()}
+                        value={it.instructions}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setRxItems((prev) =>
+                            prev.map((x, i) =>
+                              i === idx ? { ...x, instructions: v } : x
+                            )
+                          );
+                        }}
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      <button
+                        type="button"
+                        className="rounded-lg border bg-white px-3 py-1.5 text-xs hover:bg-gray-50"
+                        onClick={() =>
+                          setRxItems((prev) => prev.filter((_, i) => i !== idx))
+                        }
+                        disabled={rxItems.length === 1}
+                        title={
+                          rxItems.length === 1
+                            ? "At least one row required"
+                            : "Remove"
+                        }
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <button
+              className="rounded-lg border bg-white px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-60"
+              disabled={saving}
+              onClick={save}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function getErrorMessage(v: unknown): string | null {
+  if (v && typeof v === "object" && "error" in v) {
+    const e = (v as Record<string, unknown>).error;
+    return typeof e === "string" ? e : null;
+  }
+  return null;
+}
+
+function isLoadedData(v: unknown): v is LoadedData {
+  if (!v || typeof v !== "object") return false;
+  // minimal checks — expand if you want stricter validation
+  const o = v as Record<string, unknown>;
+
+  // example required keys (adjust to your LoadedData shape)
+  if (!("visitId" in o)) return false;
+  if (typeof o.visitId !== "number" && typeof o.visitId !== "string")
+    return false;
+
+  return true;
+}

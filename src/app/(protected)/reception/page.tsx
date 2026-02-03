@@ -202,7 +202,9 @@ const patientColumns: Column<PatientRow>[] = [
   },
   {
     header: "Last Visit",
-    cell: (p) => <span className="text-[#646179]">{p.lastVisit}</span>,
+    cell: (p) => (
+      <span className="text-[#646179]">{formatDate(p.lastVisit)}</span>
+    ),
   },
   {
     header: "Consulting Doctor",
@@ -246,7 +248,7 @@ export default function ReceptionDashboard() {
     paymentMode: string;
     payStatus: PayStatus;
   }>({
-    visitDate: new Date().toISOString().slice(0, 10),
+    visitDate: todayLocalYYYYMMDD(),
     name: "",
     phone: "",
     doctorId: 0,
@@ -383,7 +385,7 @@ export default function ReceptionDashboard() {
       if (!nextForm.doctorId) errs.doctorId = "Please select a doctor.";
 
       if (!nextForm.visitDate) errs.visitDate = "Visit date is required.";
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayLocalYYYYMMDD();
       if (nextForm.visitDate > today)
         errs.visitDate = "Visit date cannot be in the future.";
 
@@ -535,7 +537,7 @@ export default function ReceptionDashboard() {
       setFormSuccess("Patient registered and added to today&apos;s queue.");
       setForm((f) => ({
         ...f,
-        visitDate: new Date().toISOString().slice(0, 10),
+        visitDate: todayLocalYYYYMMDD(),
         name: "",
         phone: "",
         consultingFee: "",
@@ -543,11 +545,16 @@ export default function ReceptionDashboard() {
       setReferral(null);
 
       if (data?.visitId) {
-        router.push(`/reception/bill/${data.visitId}`);
+        window.open(
+          `/reception/bill/${data.visitId}`,
+          "_blank",
+          "noopener,noreferrer"
+        );
       } else {
         console.error("Register API did not return visitId", data);
       }
 
+      await loadPatients("", 1);
       if (data?.queued) {
         await loadDashboard();
       }
@@ -566,7 +573,7 @@ export default function ReceptionDashboard() {
 
     setForm((f) => ({
       ...f,
-      visitDate: new Date().toISOString().slice(0, 10),
+      visitDate: todayLocalYYYYMMDD(),
       name: "",
       phone: "",
       consultingFee: "",
@@ -798,6 +805,7 @@ export default function ReceptionDashboard() {
                       type="date"
                       className={inputClass}
                       value={form.visitDate}
+                      max={todayLocalYYYYMMDD()}
                       onChange={(e) => {
                         setForm((f) => ({ ...f, visitDate: e.target.value }));
                         setFieldErrors((prev) => ({
@@ -1259,3 +1267,19 @@ const inputClass =
 
 const selectClass =
   "w-full rounded-lg border px-3 py-2 text-sm bg-[var(--input-bg)] border-[var(--input-border)] text-[var(--input-text)] focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]";
+
+function todayLocalYYYYMMDD() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatDate(d: Date | string) {
+  const dt = d instanceof Date ? d : new Date(d);
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const yyyy = dt.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}

@@ -1,5 +1,6 @@
 import Image from "next/image";
 import LogoutButton from "./LogoutButton";
+import UserMenu from "./UserMenu";
 
 type HeaderUser = {
   fullName: string;
@@ -61,11 +62,7 @@ export default function Header({ user }: { user: HeaderUser }) {
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Profile icon */}
-              <div className="h-10 w-10 rounded-full bg-gray-100 border flex items-center justify-center">
-                <span className="text-gray-500">👤</span>
-              </div>
-
+              <UserMenu />
               {/* Logout */}
               <LogoutButton />
             </div>
