@@ -1,3 +1,4 @@
+// src/app/(protected)/patients/[patientId]/PatientSummaryClient.tsx
 "use client";
 import { useMemo, useState } from "react";
 import FeeAdjustModal from "@/components/billing/FeeAdjustModal";
@@ -113,9 +114,49 @@ export default function PatientSummaryClient({
   const [feeModalOpen, setFeeModalOpen] = useState(false);
   const [feeVisitId, setFeeVisitId] = useState<number | null>(null);
 
+  const [newVisitLoading, setNewVisitLoading] = useState(false);
+  const [newVisitErr, setNewVisitErr] = useState<string | null>(null);
+
   // after save, simplest is to refresh page (server component reload)
   function refreshSummary() {
     router.refresh();
+  }
+
+  async function createNewVisitAndOpen() {
+    setNewVisitErr(null);
+
+    const ok = window.confirm(
+      "Create a new visit for today and open consultation?"
+    );
+    if (!ok) return;
+
+    setNewVisitLoading(true);
+    try {
+      const res = await fetch(
+        `/api/doctor/patients/${encodeURIComponent(
+          patient.patientCode
+        )}/new-visit`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}), // doctorId not needed for normal doctor login
+        }
+      );
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data?.ok || !data?.visitId) {
+        alert(data?.error || "Failed to create new visit.");
+        return;
+      }
+
+      // Option A: go straight to consultation editor
+      router.push(`/doctor/visits/${data.visitId}/consultation`);
+    } catch {
+      setNewVisitErr("Network error while creating new visit.");
+    } finally {
+      setNewVisitLoading(false);
+    }
   }
 
   const visitColumns: Column<VisitRow>[] = useMemo(
@@ -195,6 +236,12 @@ export default function PatientSummaryClient({
                 <Badge>{patient.phone}</Badge>
                 <Badge tone="gray">Last visit: {patient.lastVisit}</Badge>
               </div>
+
+              {newVisitErr && (
+                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {newVisitErr}
+                </div>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -216,10 +263,11 @@ export default function PatientSummaryClient({
 
               <button
                 type="button"
-                onClick={() => alert("Create New Visit (later)")}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                onClick={createNewVisitAndOpen}
+                disabled={newVisitLoading}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
               >
-                ➕ New Visit
+                {newVisitLoading ? "Creating..." : "➕ New Visit"}
               </button>
             </div>
           </div>
@@ -319,6 +367,7 @@ export default function PatientSummaryClient({
           </div>
         </div>
       </div>
+
       <FeeAdjustModal
         open={feeModalOpen}
         visitId={feeVisitId}

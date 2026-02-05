@@ -682,13 +682,18 @@ function getErrorMessage(v: unknown): string | null {
 
 function isLoadedData(v: unknown): v is LoadedData {
   if (!v || typeof v !== "object") return false;
-  // minimal checks — expand if you want stricter validation
+
   const o = v as Record<string, unknown>;
 
-  // example required keys (adjust to your LoadedData shape)
-  if (!("visitId" in o)) return false;
-  if (typeof o.visitId !== "number" && typeof o.visitId !== "string")
+  if (o.ok !== true) return false;
+
+  if (
+    !o.visit ||
+    typeof o.visit !== "object" ||
+    !("visitId" in (o.visit as Record<string, unknown>))
+  ) {
     return false;
+  }
 
   return true;
 }

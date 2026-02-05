@@ -1,3 +1,4 @@
+// src/components/ui/ReferralComboBox.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -7,11 +8,12 @@ type Referral = { id: string; name: string };
 export default function ReferralComboBox({
   value,
   onChange,
+  apiBase = "/api/reception/referrals",
 }: {
   value: Referral | null;
   onChange: (v: Referral | null) => void;
+  apiBase?: string;
 }) {
-  // Draft mode: when typing, we use draftQuery; otherwise show value?.name
   const [draftQuery, setDraftQuery] = useState("");
   const [isEditing, setIsEditing] = useState(false);
 
@@ -19,13 +21,11 @@ export default function ReferralComboBox({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Keyboard highlight index (includes add-row if visible)
   const [activeIndex, setActiveIndex] = useState<number>(-1);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Debounce timer + in-flight request cancellation
   const debounceRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -37,11 +37,8 @@ export default function ReferralComboBox({
     return !items.some((i) => i.name.toLowerCase() === q.toLowerCase());
   }, [inputValue, items]);
 
-  // Total rows in dropdown for keyboard nav:
-  // items + (addRow ? 1 : 0)
   const totalRows = items.length + (canAdd ? 1 : 0);
 
-  // Close on outside click (no setState-in-effect lint issue — this syncs to DOM events)
   useEffect(() => {
     function onDocMouseDown(e: MouseEvent) {
       if (!rootRef.current?.contains(e.target as Node)) {
@@ -75,7 +72,7 @@ export default function ReferralComboBox({
     setLoading(true);
     try {
       const res = await fetch(
-        `/api/reception/referrals?search=${encodeURIComponent(search)}`,
+        `${apiBase}?search=${encodeURIComponent(search)}`,
         { signal: controller.signal }
       );
       const data = await res.json().catch(() => ({}));
@@ -84,8 +81,7 @@ export default function ReferralComboBox({
       } else {
         setItems([]);
       }
-    } catch (e: unknown) {
-      // Ignore abort errors
+    } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) {
         setItems([]);
       }
@@ -96,7 +92,6 @@ export default function ReferralComboBox({
 
   function scheduleLoad(search: string) {
     clearDebounce();
-    // debounce 250ms (tweakable)
     debounceRef.current = window.setTimeout(() => {
       loadList(search);
     }, 250);
@@ -106,7 +101,7 @@ export default function ReferralComboBox({
     const name = inputValue.trim();
     if (!name) return;
 
-    const res = await fetch("/api/reception/referrals", {
+    const res = await fetch(apiBase, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
@@ -130,17 +125,10 @@ export default function ReferralComboBox({
     setActiveIndex(-1);
   }
 
-  function openAndSearch(seed?: string) {
-    setOpen(true);
-    setActiveIndex(-1);
-    scheduleLoad(seed ?? "");
-  }
-
   function handleFocus() {
     setOpen(true);
     setActiveIndex(-1);
 
-    // Enter editing mode and seed draft from current value
     if (!isEditing) {
       setIsEditing(true);
       setDraftQuery(value?.name ?? "");
@@ -155,63 +143,45 @@ export default function ReferralComboBox({
     setDraftQuery(next);
     setOpen(true);
     setActiveIndex(-1);
-    onChange(null); // typing resets selection
+    onChange(null);
     scheduleLoad(next);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-      openAndSearch(inputValue);
-      e.preventDefault();
-      return;
-    }
-
     if (!open) return;
 
     if (e.key === "Escape") {
       setOpen(false);
       setActiveIndex(-1);
-      e.preventDefault();
       return;
     }
 
     if (e.key === "ArrowDown") {
-      setActiveIndex((i) => {
-        const next = Math.min(i + 1, totalRows - 1);
-        return totalRows === 0 ? -1 : next;
-      });
+      setActiveIndex((i) => Math.min(i + 1, totalRows - 1));
       e.preventDefault();
       return;
     }
 
     if (e.key === "ArrowUp") {
-      setActiveIndex((i) => {
-        const next = Math.max(i - 1, 0);
-        return totalRows === 0 ? -1 : next;
-      });
+      setActiveIndex((i) => Math.max(i - 1, 0));
       e.preventDefault();
       return;
     }
 
     if (e.key === "Enter") {
-      // If highlight is on a referral row
       if (activeIndex >= 0 && activeIndex < items.length) {
         selectReferral(items[activeIndex]);
         e.preventDefault();
         return;
       }
 
-      // If highlight is on add-row (or no highlight but canAdd)
-      const addRowIndex = items.length; // add row lives after items
-      if ((activeIndex === addRowIndex || activeIndex === -1) && canAdd) {
+      if ((activeIndex === items.length || activeIndex === -1) && canAdd) {
         addNew();
         e.preventDefault();
-        return;
       }
     }
   }
 
-  // Cleanup timers/requests on unmount
   useEffect(() => {
     return () => {
       clearDebounce();
@@ -237,23 +207,20 @@ export default function ReferralComboBox({
             <div className="px-3 py-2 text-sm text-gray-600">Loading…</div>
           ) : (
             <>
-              {items.map((r, idx) => {
-                const active = idx === activeIndex;
-                return (
-                  <button
-                    key={r.id}
-                    type="button"
-                    className={[
-                      "block w-full text-left px-3 py-2 text-sm",
-                      active ? "bg-gray-100" : "hover:bg-gray-50",
-                    ].join(" ")}
-                    onMouseEnter={() => setActiveIndex(idx)}
-                    onClick={() => selectReferral(r)}
-                  >
-                    {r.name}
-                  </button>
-                );
-              })}
+              {items.map((r, idx) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className={[
+                    "block w-full text-left px-3 py-2 text-sm",
+                    idx === activeIndex ? "bg-gray-100" : "hover:bg-gray-50",
+                  ].join(" ")}
+                  onMouseEnter={() => setActiveIndex(idx)}
+                  onClick={() => selectReferral(r)}
+                >
+                  {r.name}
+                </button>
+              ))}
 
               {items.length === 0 && !canAdd && (
                 <div className="px-3 py-2 text-sm text-gray-600">

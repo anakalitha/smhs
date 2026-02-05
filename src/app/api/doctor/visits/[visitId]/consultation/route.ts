@@ -1,3 +1,4 @@
+// src/app/api/doctor/visits/[visitId]/consultation/route.ts
 import { NextResponse } from "next/server";
 import type { RowDataPacket, ResultSetHeader } from "mysql2/promise";
 import { db } from "@/lib/db";
@@ -37,24 +38,12 @@ type RxItemRow = RowDataPacket & {
   sort_order: number;
 };
 
-type RxItemInput = {
-  medicineName: string;
-  dosage?: string | null;
-  morning?: boolean;
-  afternoon?: boolean;
-  night?: boolean;
-  beforeFood?: boolean;
-  durationDays?: number | "" | null;
-  instructions?: string | null;
-  sortOrder?: number;
-};
-
 type OrderRow = RowDataPacket & {
   id: number;
   order_type: "SCAN" | "PAP_SMEAR" | "CTG";
-  details: string | null;
-  status: "ORDERED" | "BILLED" | "DONE" | "CANCELLED";
-  created_at: string;
+  notes: string | null;
+  status: "ORDERED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
+  ordered_at: string;
 };
 
 type UserLike = { roles?: string[] } | null | undefined;
@@ -66,6 +55,10 @@ function mustBeDoctor(me: UserLike) {
     roles.includes("ADMIN") ||
     roles.includes("SUPER_ADMIN")
   );
+}
+
+function isAdmin(me: { roles: string[] }) {
+  return me.roles.includes("ADMIN") || me.roles.includes("SUPER_ADMIN");
 }
 
 async function resolveDoctorIdForUser(args: {
@@ -89,142 +82,6 @@ async function resolveDoctorIdForUser(args: {
   if (rows.length === 0) return null;
   const id = Number(rows[0].id);
   return Number.isFinite(id) && id > 0 ? id : null;
-}
-
-export async function GET(req: Request, ctx: Ctx) {
-  const me = await getCurrentUser();
-  if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!mustBeDoctor(me))
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
-  const { visitId } = await ctx.params;
-  const id = Number(visitId);
-  if (!Number.isFinite(id) || id <= 0) {
-    return NextResponse.json({ error: "Invalid visitId." }, { status: 400 });
-  }
-
-  const orgId = me.organizationId != null ? Number(me.organizationId) : NaN;
-  const branchId = me.branchId != null ? Number(me.branchId) : NaN;
-  const doctorId =
-    me.roles.includes("ADMIN") || me.roles.includes("SUPER_ADMIN")
-      ? null
-      : await resolveDoctorIdForUser({
-          userId: me.id,
-          orgId,
-          branchId,
-        });
-
-  if (
-    !me.roles.includes("ADMIN") &&
-    !me.roles.includes("SUPER_ADMIN") &&
-    (!doctorId || doctorId <= 0)
-  ) {
-    return NextResponse.json(
-      { error: "Doctor account not linked to doctor profile." },
-      { status: 400 }
-    );
-  }
-
-  if (!Number.isFinite(orgId) || !Number.isFinite(branchId)) {
-    return NextResponse.json(
-      { error: "Invalid org/branch in session." },
-      { status: 400 }
-    );
-  }
-  const isAdmin =
-    me.roles.includes("ADMIN") || me.roles.includes("SUPER_ADMIN");
-
-  if (!isAdmin && (!doctorId || doctorId <= 0)) {
-    return NextResponse.json(
-      { error: "Doctor account not linked to doctor profile." },
-      { status: 400 }
-    );
-  }
-
-  // Ensure visit belongs to this doctor + org/branch
-  const [vRows] = await db.execute<VisitRow[]>(
-    `
-    SELECT
-      v.id AS visitId,
-      v.visit_date AS visitDate,
-      p.patient_code AS patientCode,
-      p.full_name AS patientName,
-      v.doctor_id AS doctorId
-    FROM visits v
-    JOIN patients p ON p.id = v.patient_id
-    WHERE v.id = :visitId
-      AND v.organization_id = :org
-      AND v.branch_id = :branch
-    LIMIT 1
-    `,
-    { visitId: id, org: orgId, branch: branchId }
-  );
-
-  if (vRows.length === 0) {
-    return NextResponse.json({ error: "Visit not found." }, { status: 404 });
-  }
-
-  if (!isAdmin) {
-    if (!doctorId) {
-      return NextResponse.json(
-        { error: "Doctor account not linked to doctor profile." },
-        { status: 400 }
-      );
-    }
-    if (Number(vRows[0].doctorId) !== doctorId) {
-      return NextResponse.json({ error: "Forbidden." }, { status: 403 });
-    }
-  }
-
-  const [nRows] = await db.execute<NoteRow[]>(
-    `SELECT diagnosis, investigation, remarks FROM visit_notes WHERE visit_id = :visitId LIMIT 1`,
-    { visitId: id }
-  );
-
-  const [rxRows] = await db.execute<RxRow[]>(
-    `SELECT id AS prescriptionId, notes FROM prescriptions WHERE visit_id = :visitId LIMIT 1`,
-    { visitId: id }
-  );
-
-  const prescriptionId = rxRows[0]?.prescriptionId ?? null;
-
-  const items: RxItemRow[] = [];
-
-  if (prescriptionId) {
-    const [rows] = await db.execute<RxItemRow[]>(
-      `
-    SELECT
-      id, medicine_name, dosage, morning, afternoon, night, before_food, duration_days, instructions, sort_order
-    FROM prescription_items
-    WHERE prescription_id = :pid
-    ORDER BY sort_order ASC, id ASC
-    `,
-      { pid: prescriptionId }
-    );
-
-    items.push(...rows);
-  }
-
-  const [orders] = await db.execute<OrderRow[]>(
-    `
-    SELECT id, order_type, details, status, created_at
-    FROM visit_orders
-    WHERE visit_id = :visitId
-      AND order_type IN ('SCAN','PAP_SMEAR','CTG')
-      AND status <> 'CANCELLED'
-    ORDER BY created_at ASC, id ASC
-    `,
-    { visitId: id }
-  );
-
-  return NextResponse.json({
-    ok: true,
-    visit: vRows[0],
-    note: nRows[0] ?? null,
-    prescription: rxRows[0] ?? null,
-    prescriptionItems: items ?? [],
-    orders,
-  });
 }
 
 type SavePayload = {
@@ -254,6 +111,165 @@ type SavePayload = {
   };
 };
 
+function toNullableInt(v: number | "" | null | undefined): number | null {
+  if (v === "" || v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+export async function GET(req: Request, ctx: Ctx) {
+  const me = await getCurrentUser();
+  if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!mustBeDoctor(me))
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+  const { visitId } = await ctx.params;
+  const id = Number(visitId);
+  if (!Number.isFinite(id) || id <= 0) {
+    return NextResponse.json({ error: "Invalid visitId." }, { status: 400 });
+  }
+
+  const orgId = me.organizationId != null ? Number(me.organizationId) : NaN;
+  const branchId = me.branchId != null ? Number(me.branchId) : NaN;
+  if (!Number.isFinite(orgId) || !Number.isFinite(branchId)) {
+    return NextResponse.json(
+      { error: "Invalid org/branch in session." },
+      { status: 400 }
+    );
+  }
+
+  const admin = isAdmin(me);
+
+  const doctorId = admin
+    ? null
+    : await resolveDoctorIdForUser({
+        userId: me.id,
+        orgId,
+        branchId,
+      });
+
+  if (!admin && !doctorId) {
+    return NextResponse.json(
+      { error: "Doctor account not linked to doctor profile." },
+      { status: 400 }
+    );
+  }
+
+  const [vRows] = await db.execute<VisitRow[]>(
+    `
+    SELECT
+      v.id AS visitId,
+      v.visit_date AS visitDate,
+      p.patient_code AS patientCode,
+      p.full_name AS patientName,
+      v.doctor_id AS doctorId
+    FROM visits v
+    JOIN patients p ON p.id = v.patient_id
+    WHERE v.id = :visitId
+      AND v.organization_id = :org
+      AND v.branch_id = :branch
+    LIMIT 1
+    `,
+    { visitId: id, org: orgId, branch: branchId }
+  );
+
+  if (vRows.length === 0) {
+    return NextResponse.json({ error: "Visit not found." }, { status: 404 });
+  }
+
+  if (!admin && vRows[0].doctorId !== doctorId) {
+    return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+  }
+
+  const [nRows] = await db.execute<NoteRow[]>(
+    `SELECT diagnosis, investigation, remarks FROM visit_notes WHERE visit_id = :visitId LIMIT 1`,
+    { visitId: id }
+  );
+
+  const [rxRows] = await db.execute<RxRow[]>(
+    `SELECT id AS prescriptionId, notes FROM prescriptions WHERE visit_id = :visitId LIMIT 1`,
+    { visitId: id }
+  );
+
+  const prescriptionId = rxRows[0]?.prescriptionId ?? null;
+
+  const items: RxItemRow[] = [];
+  if (prescriptionId) {
+    const [rows] = await db.execute<RxItemRow[]>(
+      `
+      SELECT
+        id, medicine_name, dosage, morning, afternoon, night, before_food,
+        duration_days, instructions, sort_order
+      FROM prescription_items
+      WHERE prescription_id = :pid
+      ORDER BY sort_order ASC, id ASC
+      `,
+      { pid: prescriptionId }
+    );
+    items.push(...rows);
+  }
+
+  const [orders] = await db.execute<OrderRow[]>(
+    `
+    SELECT id, order_type, notes, status, ordered_at
+    FROM visit_orders
+    WHERE visit_id = :visitId
+      AND order_type IN ('SCAN','PAP_SMEAR','CTG')
+      AND status <> 'CANCELLED'
+    ORDER BY ordered_at ASC, id ASC
+    `,
+    { visitId: id }
+  );
+
+  return NextResponse.json({
+    ok: true,
+
+    visit: {
+      visitId: Number(vRows[0].visitId),
+      visitDate: String(vRows[0].visitDate).slice(0, 10),
+      patientCode: String(vRows[0].patientCode),
+      patientName: String(vRows[0].patientName),
+      // doctorId: Number(vRows[0].doctorId), // include ONLY if your client expects it
+    },
+
+    note: nRows[0]
+      ? {
+          diagnosis: nRows[0].diagnosis ?? null,
+          investigation: nRows[0].investigation ?? null,
+          remarks: nRows[0].remarks ?? null,
+        }
+      : null,
+
+    prescription: rxRows[0]
+      ? {
+          prescriptionId: Number(rxRows[0].prescriptionId),
+          notes: rxRows[0].notes ?? null,
+        }
+      : null,
+
+    prescriptionItems: items.map((it) => ({
+      id: Number(it.id),
+      medicineName: String(it.medicine_name),
+      dosage: it.dosage ?? null,
+      morning: Number(it.morning) === 1,
+      afternoon: Number(it.afternoon) === 1,
+      night: Number(it.night) === 1,
+      beforeFood: Number(it.before_food) === 1,
+      durationDays: it.duration_days == null ? null : Number(it.duration_days),
+      instructions: it.instructions ?? null,
+      sortOrder: Number(it.sort_order ?? 0),
+    })),
+
+    orders: orders.map((o) => ({
+      id: Number(o.id),
+      orderType: o.order_type, // "SCAN" | "PAP_SMEAR" | "CTG"
+      details: o.notes ?? "", // map notes -> details
+      status: o.status, // "ORDERED" | "IN_PROGRESS" | "COMPLETED"
+      createdAt: String(o.ordered_at), // map ordered_at -> createdAt
+    })),
+  });
+}
+
 export async function POST(req: Request, ctx: Ctx) {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -268,15 +284,24 @@ export async function POST(req: Request, ctx: Ctx) {
 
   const orgId = me.organizationId != null ? Number(me.organizationId) : NaN;
   const branchId = me.branchId != null ? Number(me.branchId) : NaN;
-  const doctorId = me.doctorId != null ? Number(me.doctorId) : NaN;
-
   if (!Number.isFinite(orgId) || !Number.isFinite(branchId)) {
     return NextResponse.json(
       { error: "Invalid org/branch in session." },
       { status: 400 }
     );
   }
-  if (!Number.isFinite(doctorId) || doctorId <= 0) {
+
+  const admin = isAdmin(me);
+
+  const doctorId = admin
+    ? null
+    : await resolveDoctorIdForUser({
+        userId: me.id,
+        orgId,
+        branchId,
+      });
+
+  if (!admin && !doctorId) {
     return NextResponse.json(
       { error: "Doctor account not linked to doctor profile." },
       { status: 400 }
@@ -285,7 +310,6 @@ export async function POST(req: Request, ctx: Ctx) {
 
   const body = (await req.json().catch(() => ({}))) as SavePayload;
 
-  // verify visit ownership
   const [vRows] = await db.execute<RowDataPacket[]>(
     `
     SELECT v.id, v.doctor_id
@@ -301,18 +325,9 @@ export async function POST(req: Request, ctx: Ctx) {
   if (vRows.length === 0) {
     return NextResponse.json({ error: "Visit not found." }, { status: 404 });
   }
-  const isAdmin =
-    me.roles.includes("ADMIN") || me.roles.includes("SUPER_ADMIN");
-  if (!isAdmin) {
-    if (!doctorId) {
-      return NextResponse.json(
-        { error: "Doctor account not linked to doctor profile." },
-        { status: 400 }
-      );
-    }
-    if (Number(vRows[0].doctor_id) !== doctorId) {
-      return NextResponse.json({ error: "Forbidden." }, { status: 403 });
-    }
+
+  if (!admin && Number(vRows[0].doctor_id) !== doctorId) {
+    return NextResponse.json({ error: "Forbidden." }, { status: 403 });
   }
 
   const conn = await db.getConnection();
@@ -339,28 +354,26 @@ export async function POST(req: Request, ctx: Ctx) {
       }
     );
 
-    // 2) Orders: upsert by (visit_id + order_type) via “insert or update latest”
-    // Simpler: If needed=true and no existing active order -> create.
-    // If needed=false -> mark existing ORDERED as CANCELLED (if any).
+    // 2) Orders (visit_orders uses `notes`, ordered_at, ordered_by_user_id)
     const orderMap: Array<{
       type: "SCAN" | "PAP_SMEAR" | "CTG";
       needed: boolean;
-      details: string;
+      notes: string;
     }> = [
       {
         type: "SCAN",
         needed: !!body.orders?.scan?.needed,
-        details: body.orders?.scan?.details ?? "",
+        notes: body.orders?.scan?.details ?? "",
       },
       {
         type: "PAP_SMEAR",
         needed: !!body.orders?.pap?.needed,
-        details: body.orders?.pap?.details ?? "",
+        notes: body.orders?.pap?.details ?? "",
       },
       {
         type: "CTG",
         needed: !!body.orders?.ctg?.needed,
-        details: body.orders?.ctg?.details ?? "",
+        notes: body.orders?.ctg?.details ?? "",
       },
     ];
 
@@ -382,20 +395,20 @@ export async function POST(req: Request, ctx: Ctx) {
         if (existing.length === 0) {
           await conn.execute(
             `
-            INSERT INTO visit_orders (visit_id, order_type, details, status, created_by)
-            VALUES (:visitId, :type, :details, 'ORDERED', :by)
+            INSERT INTO visit_orders (visit_id, order_type, notes, status, ordered_by_user_id)
+            VALUES (:visitId, :type, :notes, 'ORDERED', :by)
             `,
-            { visitId: id, type: o.type, details: o.details || null, by: me.id }
+            { visitId: id, type: o.type, notes: o.notes || null, by: me.id }
           );
         } else {
-          // update details (keep status)
+          // allow updating notes while still ORDERED/IN_PROGRESS
           await conn.execute(
-            `UPDATE visit_orders SET details = :details WHERE id = :id`,
-            { details: o.details || null, id: Number(existing[0].id) }
+            `UPDATE visit_orders SET notes = :notes WHERE id = :id`,
+            { notes: o.notes || null, id: Number(existing[0].id) }
           );
         }
       } else {
-        // If not needed, cancel only if still ORDERED (don’t cancel billed/done)
+        // Cancel only if still ORDERED (don’t cancel if department already started)
         if (existing.length > 0 && String(existing[0].status) === "ORDERED") {
           await conn.execute(
             `UPDATE visit_orders SET status = 'CANCELLED' WHERE id = :id`,
@@ -421,24 +434,16 @@ export async function POST(req: Request, ctx: Ctx) {
     } else {
       rxId = Number(rxRows[0].id);
       await conn.execute(
-        `UPDATE prescriptions SET notes = :notes, updated_at = CURRENT_TIMESTAMP WHERE id = :id`,
+        `UPDATE prescriptions SET notes = :notes WHERE id = :id`,
         { notes: body.prescription?.notes ?? null, id: rxId }
       );
     }
 
-    // 4) Replace prescription items (simplest + safest for v1)
+    // 4) Replace prescription items (v1 simplest)
     await conn.execute(
       `DELETE FROM prescription_items WHERE prescription_id = :pid`,
-      {
-        pid: rxId,
-      }
+      { pid: rxId }
     );
-
-    function toNullableInt(v: number | "" | null | undefined): number | null {
-      if (v === "" || v == null) return null;
-      const n = Number(v);
-      return Number.isFinite(n) ? n : null;
-    }
 
     const items = body.prescription?.items ?? [];
     for (const it of items) {
@@ -460,7 +465,7 @@ export async function POST(req: Request, ctx: Ctx) {
           a: it.afternoon ? 1 : 0,
           n: it.night ? 1 : 0,
           bf: it.beforeFood ? 1 : 0,
-          days: toNullableInt(it.durationDays),
+          days: toNullableInt(it.durationDays ?? null),
           instr: it.instructions ? String(it.instructions).trim() : null,
           sort: Number.isFinite(it.sortOrder) ? it.sortOrder : 0,
         }

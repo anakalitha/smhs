@@ -1,3 +1,4 @@
+// src/app/api/reception/referrals/route.ts
 import { NextResponse } from "next/server";
 import type { RowDataPacket, ResultSetHeader } from "mysql2/promise";
 import { db } from "@/lib/db";
@@ -9,21 +10,26 @@ type ReferralRow = RowDataPacket & {
   name: string;
 };
 
+function isAllowed(me: { roles: string[] }) {
+  return (
+    me.roles.includes("RECEPTION") ||
+    me.roles.includes("DOCTOR") || // ✅ allow doctors
+    me.roles.includes("ADMIN") ||
+    me.roles.includes("SUPER_ADMIN")
+  );
+}
+
 export async function GET(req: Request) {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const allowed =
-    me.roles.includes("RECEPTION") ||
-    me.roles.includes("ADMIN") ||
-    me.roles.includes("SUPER_ADMIN");
+  // console.log("GET /api/reception/referrals roles:", me.roles);
 
-  if (!allowed)
+  if (!isAllowed(me))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const { searchParams } = new URL(req.url);
   const search = (searchParams.get("search") || "").trim();
-
   const like = `%${search}%`;
 
   const [rows] = await db.execute<ReferralRow[]>(
@@ -42,12 +48,9 @@ export async function POST(req: Request) {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const allowed =
-    me.roles.includes("RECEPTION") ||
-    me.roles.includes("ADMIN") ||
-    me.roles.includes("SUPER_ADMIN");
+  // console.log("POST /api/reception/referrals roles:", me.roles);
 
-  if (!allowed)
+  if (!isAllowed(me))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const body = (await req.json()) as { name?: string };
@@ -78,11 +81,9 @@ export async function POST(req: Request) {
       { id, name }
     );
 
-    return NextResponse.json({
-      referral: { id, name },
-    });
+    return NextResponse.json({ referral: { id, name } });
   } catch {
-    // In case of race condition
+    // race condition safety
     const [rows] = await db.execute<ReferralRow[]>(
       `SELECT id, name
        FROM referralperson

@@ -55,16 +55,16 @@ export async function POST(req: Request) {
       ? Number(body.consultingFee)
       : Number(body.consultingFee);
 
-  console.log("🔎 Register payload:", {
-    visitDate,
-    name,
-    phoneClean,
-    referralId,
-    doctorId,
-    paymentMode,
-    payStatus,
-    feeNum,
-  });
+  // console.log("🔎 Register payload:", {
+  //   visitDate,
+  //   name,
+  //   phoneClean,
+  //   referralId,
+  //   doctorId,
+  //   paymentMode,
+  //   payStatus,
+  //   feeNum,
+  // });
 
   // --- Validation ---
   if (!visitDate || !/^\d{4}-\d{2}-\d{2}$/.test(visitDate)) {
@@ -289,7 +289,7 @@ export async function POST(req: Request) {
     );
 
     await conn.commit();
-    console.log("✅ Returning visitId:", visitId);
+    // console.log("✅ Returning visitId:", visitId);
     return NextResponse.json({
       ok: true,
       visitId,

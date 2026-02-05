@@ -6,8 +6,8 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 type RoleRow = RowDataPacket & { id: number };
 
 async function main() {
-  console.log("DB_USER=", process.env.DB_USER);
-  console.log("DB_PASSWORD set?", !!process.env.DB_PASSWORD);
+  // console.log("DB_USER=", process.env.DB_USER);
+  // console.log("DB_PASSWORD set?", !!process.env.DB_PASSWORD);
 
   const fullName = "System Admin";
   const email = "admin@smnh.local";
@@ -43,9 +43,9 @@ async function main() {
     { user_id: userId, role_id: roleId }
   );
 
-  console.log("✅ Admin created");
-  console.log("Email:", email);
-  console.log("Temp password:", password);
+  // console.log("✅ Admin created");
+  // console.log("Email:", email);
+  // console.log("Temp password:", password);
   process.exit(0);
 }
 

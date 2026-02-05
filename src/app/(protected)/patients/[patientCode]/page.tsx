@@ -1,3 +1,4 @@
+// src/app/(protected)/patients/[patientCode]/page.tsx
 import { redirect } from "next/navigation";
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db";
@@ -25,31 +26,22 @@ type VisitRow = RowDataPacket & {
   paymentMode: string;
 };
 
-export default async function PatientSummaryPage({
-  params,
-}: {
-  params: { patientId: string };
-}) {
+type Ctx = { params: Promise<{ patientCode: string }> };
+
+export default async function PatientSummaryPage({ params }: Ctx) {
   const me = await getCurrentUser();
   if (!me) redirect("/login");
 
-  console.log("🧾 PatientSummary getCurrentUser:", {
-    id: me.id,
-    roles: me.roles,
-    organizationId: me.organizationId,
-    branchId: me.branchId,
-  });
-
   // ✅ UNWRAP params (Next.js 16)
-  const { patientId } = await params;
-  const patientCode = String(patientId ?? "").trim();
+  const { patientCode: patientCodeParam } = await params;
+  const patientCode = String(patientCodeParam ?? "").trim();
 
   // ✅ Normalize IDs
   const orgId = me.organizationId != null ? Number(me.organizationId) : NaN;
   const branchId = me.branchId != null ? Number(me.branchId) : NaN;
 
   if (!patientCode) {
-    return <div className="p-6">Invalid patient id.</div>;
+    return <div className="p-6">Invalid patient code.</div>;
   }
 
   if (
@@ -65,7 +57,7 @@ export default async function PatientSummaryPage({
     );
   }
 
-  // ✅ Now your DB queries can use patientCode/orgId/branchId safely
+  // Header
   const [phRows] = await db.execute<PatientHeaderRow[]>(
     `
     SELECT
@@ -123,7 +115,7 @@ export default async function PatientSummaryPage({
       AND p.patient_code = :patientCode
     ORDER BY v.visit_date DESC, v.id DESC
     `,
-    { org: me.organizationId, branch: me.branchId, patientCode }
+    { org: orgId, branch: branchId, patientCode }
   );
 
   return (
