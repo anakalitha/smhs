@@ -1,50 +1,10 @@
-// src/app/api/doctor/visits/[visitId]/consultation/pdf/route.ts
 import { NextResponse } from "next/server";
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
-
-import PDFDocument from "pdfkit"; // ✅ ESM import (no require)
+import { PDFDocument, StandardFonts } from "pdf-lib";
 
 type Ctx = { params: Promise<{ visitId: string }> };
-
-type VisitRow = RowDataPacket & {
-  visitId: number;
-  visitDate: string;
-  patientCode: string;
-  patientName: string;
-  patientPhone: string | null;
-  doctorName: string;
-  branchName: string;
-};
-
-type NoteRow = RowDataPacket & {
-  diagnosis: string | null;
-  investigation: string | null;
-  remarks: string | null;
-};
-
-type OrderRow = RowDataPacket & {
-  order_type: "SCAN" | "PAP_SMEAR" | "CTG";
-  notes: string | null;
-  status: "ORDERED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
-};
-
-type RxRow = RowDataPacket & {
-  notes: string | null;
-};
-
-type RxItemRow = RowDataPacket & {
-  medicine_name: string;
-  dosage: string | null;
-  morning: number;
-  afternoon: number;
-  night: number;
-  before_food: number;
-  duration_days: number | null;
-  instructions: string | null;
-  sort_order: number;
-};
 
 type UserLike = { roles?: string[] } | null | undefined;
 
@@ -78,16 +38,20 @@ async function resolveDoctorIdForUser(args: {
     `,
     { uid: args.userId, org: args.orgId, branch: args.branchId }
   );
+
   if (rows.length === 0) return null;
   const id = Number(rows[0].id);
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 
-function yn(v: number) {
-  return v ? "Yes" : "No";
+function ymd(v: unknown) {
+  if (!v) return "";
+  if (typeof v === "string") return v.slice(0, 10);
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
 }
 
-export async function GET(_req: Request, ctx: Ctx) {
+export async function GET(req: Request, ctx: Ctx) {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (!mustBeDoctor(me))
@@ -120,22 +84,19 @@ export async function GET(_req: Request, ctx: Ctx) {
     );
   }
 
-  // Visit + doctor + patient + branch name
-  const [vRows] = await db.execute<VisitRow[]>(
+  // Visit header
+  const [vRows] = await db.execute<RowDataPacket[]>(
     `
     SELECT
       v.id AS visitId,
       v.visit_date AS visitDate,
       p.patient_code AS patientCode,
       p.full_name AS patientName,
-      p.phone AS patientPhone,
       d.full_name AS doctorName,
-      CONCAT(o.code, ' / ', b.code) AS branchName
+      v.doctor_id AS doctorId
     FROM visits v
     JOIN patients p ON p.id = v.patient_id
     JOIN doctors d ON d.id = v.doctor_id
-    JOIN organizations o ON o.id = v.organization_id
-    JOIN branches b ON b.id = v.branch_id
     WHERE v.id = :visitId
       AND v.organization_id = :org
       AND v.branch_id = :branch
@@ -148,155 +109,174 @@ export async function GET(_req: Request, ctx: Ctx) {
     return NextResponse.json({ error: "Visit not found." }, { status: 404 });
   }
 
-  // Ownership check (doctor can only print their own visit)
-  if (!admin) {
-    const [own] = await db.execute<RowDataPacket[]>(
-      `SELECT doctor_id FROM visits WHERE id = :visitId LIMIT 1`,
-      { visitId: id }
-    );
-    if (Number(own?.[0]?.doctor_id) !== doctorId) {
-      return NextResponse.json({ error: "Forbidden." }, { status: 403 });
-    }
+  if (!admin && Number(vRows[0].doctorId) !== doctorId) {
+    return NextResponse.json({ error: "Forbidden." }, { status: 403 });
   }
 
-  const visit = vRows[0];
+  const visit = {
+    visitId: Number(vRows[0].visitId),
+    visitDate: ymd(vRows[0].visitDate),
+    patientCode: String(vRows[0].patientCode),
+    patientName: String(vRows[0].patientName),
+    doctorName: String(vRows[0].doctorName),
+  };
 
-  const [nRows] = await db.execute<NoteRow[]>(
+  // Notes
+  const [noteRows] = await db.execute<RowDataPacket[]>(
     `SELECT diagnosis, investigation, remarks FROM visit_notes WHERE visit_id = :visitId LIMIT 1`,
     { visitId: id }
   );
-  const note = nRows[0] ?? null;
 
-  const [orders] = await db.execute<OrderRow[]>(
+  const note = noteRows[0] ?? null;
+
+  // Orders (visit_orders uses "notes")
+  const [orderRows] = await db.execute<RowDataPacket[]>(
     `
-    SELECT order_type, notes, status
+    SELECT order_type, notes, status, ordered_at
     FROM visit_orders
     WHERE visit_id = :visitId
       AND order_type IN ('SCAN','PAP_SMEAR','CTG')
       AND status <> 'CANCELLED'
-    ORDER BY id ASC
+    ORDER BY ordered_at ASC, id ASC
     `,
     { visitId: id }
   );
 
-  const [rxRows] = await db.execute<RxRow[]>(
-    `SELECT notes FROM prescriptions WHERE visit_id = :visitId LIMIT 1`,
+  // Prescription + items
+  const [rxRows] = await db.execute<RowDataPacket[]>(
+    `SELECT id, notes FROM prescriptions WHERE visit_id = :visitId LIMIT 1`,
     { visitId: id }
   );
+
   const rx = rxRows[0] ?? null;
 
-  const [rxItems] = await db.execute<RxItemRow[]>(
-    `
-    SELECT medicine_name, dosage, morning, afternoon, night, before_food,
-           duration_days, instructions, sort_order
-    FROM prescription_items pi
-    JOIN prescriptions pr ON pr.id = pi.prescription_id
-    WHERE pr.visit_id = :visitId
-    ORDER BY pi.sort_order ASC, pi.id ASC
-    `,
-    { visitId: id }
-  );
-
-  // ---- Build PDF ----
-  const doc = new PDFDocument({ size: "A4", margin: 40 });
-  const chunks: Buffer[] = [];
-
-  doc.on("data", (c: Buffer) => chunks.push(c));
-  const done = new Promise<Buffer>((resolve) => {
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
-  });
-
-  // Header
-  doc.fontSize(16).text("Consultation Summary", { align: "center" });
-  doc.moveDown(0.5);
-  doc.fontSize(10).text(`Visit ID: ${visit.visitId}`, { align: "center" });
-  doc.text(`Date: ${String(visit.visitDate).slice(0, 10)}`, {
-    align: "center",
-  });
-  doc.text(`Branch: ${visit.branchName}`, { align: "center" });
-  doc.moveDown(1);
-
-  // Patient/Doctor block
-  doc.fontSize(12).text("Patient", { underline: true });
-  doc.fontSize(10).text(`Patient ID: ${visit.patientCode}`);
-  doc.text(`Name: ${visit.patientName}`);
-  doc.text(`Phone: ${visit.patientPhone ?? "—"}`);
-  doc.moveDown(0.75);
-
-  doc.fontSize(12).text("Doctor", { underline: true });
-  doc.fontSize(10).text(`${visit.doctorName}`);
-  doc.moveDown(1);
-
-  // Notes
-  doc.fontSize(12).text("Clinical Notes", { underline: true });
-  doc.moveDown(0.25);
-  doc.fontSize(10).text(`Diagnosis: ${note?.diagnosis ?? "—"}`);
-  doc.moveDown(0.25);
-  doc.text(`Investigation: ${note?.investigation ?? "—"}`);
-  doc.moveDown(0.25);
-  doc.text(`Remarks: ${note?.remarks ?? "—"}`);
-  doc.moveDown(1);
-
-  // Orders
-  const scan = orders.find((o) => o.order_type === "SCAN");
-  const pap = orders.find((o) => o.order_type === "PAP_SMEAR");
-  const ctg = orders.find((o) => o.order_type === "CTG");
-
-  doc.fontSize(12).text("Orders", { underline: true });
-  doc.moveDown(0.25);
-  doc.fontSize(10).text(`Scan Ordered: ${yn(scan ? 1 : 0)}`);
-  if (scan?.notes) doc.text(`  Details: ${scan.notes}`);
-  doc.moveDown(0.25);
-
-  doc.text(`PAP Smear Ordered: ${yn(pap ? 1 : 0)}`);
-  if (pap?.notes) doc.text(`  Details: ${pap.notes}`);
-  doc.moveDown(0.25);
-
-  doc.text(`CTG Ordered: ${yn(ctg ? 1 : 0)}`);
-  if (ctg?.notes) doc.text(`  Details: ${ctg.notes}`);
-  doc.moveDown(1);
-
-  // Prescription
-  doc.fontSize(12).text("Prescription", { underline: true });
-  doc.moveDown(0.25);
-  doc.fontSize(10).text(`Notes: ${rx?.notes ?? "—"}`);
-  doc.moveDown(0.5);
-
-  if (rxItems.length === 0) {
-    doc.fontSize(10).text("No medicines prescribed.");
-  } else {
-    rxItems.forEach((it, idx) => {
-      const timing =
-        [it.morning ? "M" : "", it.afternoon ? "A" : "", it.night ? "N" : ""]
-          .filter(Boolean)
-          .join("-") || "—";
-
-      doc
-        .fontSize(10)
-        .text(
-          `${idx + 1}. ${it.medicine_name}${it.dosage ? ` (${it.dosage})` : ""}`
-        );
-      doc.text(
-        `   Timing: ${timing}  •  Before Food: ${
-          it.before_food ? "Yes" : "No"
-        }  •  Duration: ${it.duration_days ?? "—"} days`
-      );
-      if (it.instructions) doc.text(`   Instructions: ${it.instructions}`);
-      doc.moveDown(0.25);
-    });
+  const rxItems: Array<RowDataPacket> = [];
+  if (rx?.id) {
+    const [itRows] = await db.execute<RowDataPacket[]>(
+      `
+      SELECT medicine_name, dosage, morning, afternoon, night, before_food, duration_days, instructions, sort_order
+      FROM prescription_items
+      WHERE prescription_id = :pid
+      ORDER BY sort_order ASC, id ASC
+      `,
+      { pid: Number(rx.id) }
+    );
+    rxItems.push(...itRows);
   }
 
-  doc.moveDown(1);
-  doc.fontSize(9).text("Signature: ____________________", { align: "right" });
+  // ---- Build PDF using pdf-lib (no filesystem fonts) ----
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  doc.end();
+  const page = pdfDoc.addPage([595.28, 841.89]); // A4
+  const { width, height } = page.getSize();
 
-  const pdfBuffer = await done;
+  let y = height - 50;
 
-  // ✅ Convert Buffer -> Uint8Array so TS is happy with BodyInit
-  const body = new Uint8Array(pdfBuffer);
+  function drawText(
+    text: string,
+    opts?: { bold?: boolean; size?: number; indent?: number }
+  ) {
+    const size = opts?.size ?? 11;
+    const indent = opts?.indent ?? 0;
+    const f = opts?.bold ? fontBold : font;
 
-  return new NextResponse(body, {
+    const safe = (text ?? "").toString();
+    page.drawText(safe, { x: 50 + indent, y, size, font: f });
+    y -= size + 6;
+  }
+
+  function drawPara(label: string, value: string | null | undefined) {
+    drawText(label, { bold: true, size: 11 });
+    const v = (value ?? "").trim() || "—";
+    // very simple wrapping
+    const maxWidth = width - 100;
+    const words = v.split(/\s+/);
+    let line = "";
+    for (const w of words) {
+      const next = line ? `${line} ${w}` : w;
+      const wWidth = font.widthOfTextAtSize(next, 11);
+      if (wWidth > maxWidth) {
+        drawText(line, { indent: 10 });
+        line = w;
+      } else {
+        line = next;
+      }
+    }
+    if (line) drawText(line, { indent: 10 });
+    y -= 4;
+  }
+
+  drawText("CONSULTATION SUMMARY", { bold: true, size: 16 });
+  y -= 6;
+
+  drawText(`Visit ID: ${visit.visitId}`, { bold: true });
+  drawText(`Visit Date: ${visit.visitDate}`);
+  drawText(`Patient: ${visit.patientName} (${visit.patientCode})`);
+  drawText(`Doctor: ${visit.doctorName}`);
+  y -= 10;
+
+  drawPara("Diagnosis", note?.diagnosis ?? "");
+  drawPara("Investigation", note?.investigation ?? "");
+  drawPara("Remarks", note?.remarks ?? "");
+
+  drawText("Orders", { bold: true, size: 13 });
+  y -= 2;
+
+  if (orderRows.length === 0) {
+    drawText("— None —", { indent: 10 });
+  } else {
+    for (const o of orderRows) {
+      const type = String(o.order_type);
+      const details = (o.notes ?? "").toString().trim() || "—";
+      drawText(`${type}: ${details}`, { indent: 10 });
+    }
+  }
+  y -= 8;
+
+  drawText("Prescription", { bold: true, size: 13 });
+  y -= 2;
+
+  if (!rx && rxItems.length === 0) {
+    drawText("— None —", { indent: 10 });
+  } else {
+    const rxNotes = (rx?.notes ?? "").toString().trim();
+    if (rxNotes) drawPara("Notes", rxNotes);
+
+    if (rxItems.length === 0) {
+      drawText("— No medicines —", { indent: 10 });
+    } else {
+      for (const it of rxItems) {
+        const med = String(it.medicine_name ?? "").trim() || "—";
+        const dosage = String(it.dosage ?? "").trim();
+        const days =
+          it.duration_days == null ? "" : ` / ${String(it.duration_days)} days`;
+
+        const timings = [
+          Number(it.morning) ? "M" : "",
+          Number(it.afternoon) ? "A" : "",
+          Number(it.night) ? "N" : "",
+        ]
+          .filter(Boolean)
+          .join("");
+
+        const bf = Number(it.before_food) ? " (Before food)" : "";
+        const instr = String(it.instructions ?? "").trim();
+
+        drawText(
+          `• ${med}${dosage ? ` (${dosage})` : ""} ${timings}${days}${bf}`,
+          { indent: 10 }
+        );
+        if (instr) drawText(`  ${instr}`, { indent: 22 });
+      }
+    }
+  }
+
+  const pdfBytes = await pdfDoc.save();
+  const body = new Uint8Array(pdfBytes);
+
+  return new Response(body, {
     status: 200,
     headers: {
       "Content-Type": "application/pdf",

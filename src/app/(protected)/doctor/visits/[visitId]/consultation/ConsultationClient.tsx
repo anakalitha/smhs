@@ -1,3 +1,4 @@
+// src/app/(protected)/doctor/visits/[visitId]/consultation/ConsultationClient.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -6,6 +7,7 @@ import { useRouter } from "next/navigation";
 type OrderType = "SCAN" | "PAP_SMEAR" | "CTG";
 
 type LoadedData = {
+  ok: true;
   visit: {
     visitId: number;
     visitDate: string;
@@ -84,6 +86,7 @@ function Toggle({
 
 export default function ConsultationClient({ visitId }: { visitId: number }) {
   const router = useRouter();
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -105,6 +108,20 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
 
   const [rxNotes, setRxNotes] = useState("");
   const [rxItems, setRxItems] = useState<RxItem[]>([]);
+
+  function blankRxItem(sortOrder: number): RxItem {
+    return {
+      medicineName: "",
+      dosage: "",
+      morning: true,
+      afternoon: false,
+      night: true,
+      beforeFood: false,
+      durationDays: "",
+      instructions: "",
+      sortOrder,
+    };
+  }
 
   function hydrate(data: LoadedData) {
     setVisit({
@@ -150,20 +167,6 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
     }));
 
     setRxItems(mapped.length ? mapped : [blankRxItem(0)]);
-  }
-
-  function blankRxItem(sortOrder: number): RxItem {
-    return {
-      medicineName: "",
-      dosage: "",
-      morning: true,
-      afternoon: false,
-      night: true,
-      beforeFood: false,
-      durationDays: "",
-      instructions: "",
-      sortOrder,
-    };
   }
 
   async function load() {
@@ -245,7 +248,7 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
     rxItems,
   ]);
 
-  async function save() {
+  async function saveOnly(): Promise<boolean> {
     setSaving(true);
     setErr(null);
     setOkMsg(null);
@@ -256,11 +259,13 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setErr(data?.error || "Save failed.");
         return false;
       }
+
       setOkMsg("Saved.");
       return true;
     } catch {
@@ -269,6 +274,43 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function markDone(): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/doctor/visits/${visitId}/done`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setErr(data?.error || "Failed to mark visit as DONE.");
+        return false;
+      }
+      return true;
+    } catch {
+      setErr("Network error while marking DONE.");
+      return false;
+    }
+  }
+
+  async function saveFinishPrintAndExit() {
+    const ok = await saveOnly();
+    if (!ok) return;
+
+    const doneOk = await markDone();
+    if (!doneOk) return;
+
+    const pdfUrl = `/api/doctor/visits/${visitId}/consultation/pdf`;
+
+    // Open PDF (single window) — no about:blank
+    // Must happen synchronously after user action; keep this function directly called by button onClick.
+    window.open(pdfUrl, "_blank", "noopener,noreferrer");
+
+    // Navigate back to doctor dashboard + refresh
+    router.push("/doctor");
+    router.refresh();
   }
 
   if (loading) {
@@ -313,7 +355,6 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
                 Visit Date: {visit?.visitDate}
               </div>
             </div>
-
             <div className="flex flex-wrap gap-2">
               <button
                 className="rounded-lg border bg-white px-4 py-2 text-sm hover:bg-gray-50"
@@ -330,37 +371,26 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
               </button>
 
               <button
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
-                disabled={saving}
-                onClick={async () => {
-                  const ok = await save();
-                  if (ok) {
-                    window.open(
-                      `/doctor/visits/${visitId}/consultation/summary`,
-                      "_blank",
-                      "noopener,noreferrer"
-                    );
-                  }
-                }}
+                type="button"
+                onClick={() =>
+                  window.open(
+                    `/api/doctor/visits/${visitId}/consultation/pdf`,
+                    "_blank",
+                    "noopener,noreferrer"
+                  )
+                }
+                className="rounded-lg border bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50"
               >
-                {saving ? "Saving…" : "Save + Summary"}
+                🖨️ Print Consultation Summary
               </button>
 
               <button
-                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
                 disabled={saving}
-                onClick={async () => {
-                  const ok = await save();
-                  if (ok) {
-                    window.open(
-                      `/doctor/visits/${visitId}/consultation/prescription`,
-                      "_blank",
-                      "noopener,noreferrer"
-                    );
-                  }
-                }}
+                onClick={saveFinishPrintAndExit}
+                title="Save consultation, mark DONE, open PDF, go back to dashboard"
               >
-                {saving ? "Saving…" : "Save + Prescription"}
+                {saving ? "Saving…" : "Save"}
               </button>
             </div>
           </div>
@@ -657,11 +687,12 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
             </table>
           </div>
 
+          {/* Optional bottom Save (same action) */}
           <div className="flex justify-end gap-2">
             <button
-              className="rounded-lg border bg-white px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-60"
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
               disabled={saving}
-              onClick={save}
+              onClick={saveFinishPrintAndExit}
             >
               {saving ? "Saving…" : "Save"}
             </button>
@@ -682,18 +713,8 @@ function getErrorMessage(v: unknown): string | null {
 
 function isLoadedData(v: unknown): v is LoadedData {
   if (!v || typeof v !== "object") return false;
-
   const o = v as Record<string, unknown>;
-
   if (o.ok !== true) return false;
-
-  if (
-    !o.visit ||
-    typeof o.visit !== "object" ||
-    !("visitId" in (o.visit as Record<string, unknown>))
-  ) {
-    return false;
-  }
-
+  if (!o.visit || typeof o.visit !== "object") return false;
   return true;
 }
