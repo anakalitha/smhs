@@ -1,3 +1,4 @@
+// src\components\ui\DataTable.tsx
 "use client";
 
 import * as React from "react";
@@ -12,7 +13,7 @@ import {
 type CellRenderer<T> = (row: T) => React.ReactNode;
 
 export type Column<T> = {
-  header: string;
+  header: React.ReactNode; // ✅ allow clickable header UI
   cell: CellRenderer<T>;
   className?: string;
 };

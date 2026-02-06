@@ -22,7 +22,7 @@ type Props = {
 
 export default function ReceptionHeader({
   title = "Reception Dashboard",
-  subtitle = "Today&apos;s queue, quick registration, patient lookup, billing and reports.",
+  subtitle = "Today's queue, quick registration, patient lookup, billing and reports.",
   registerHref = "/reception/register",
   registerLabel = "➕ Register Patient",
   registerDisabled = false,
