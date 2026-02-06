@@ -3,7 +3,8 @@
 import TodayQueueCard from "./_components/TodayQueueCard";
 import PatientLookupCard from "./_components/PatientLookupCard";
 import NotificationsPanel from "@/components/notifications/NotificationsPanel";
-import ReportsSection from "./_components/ReportsSection";
+import DoctorReports from "./_components/DoctorReports";
+import DoctorAnalyticsCard from "./_components/DoctorAnalyticsCard";
 
 export default function DoctorDashboardPage() {
   return (
@@ -20,7 +21,10 @@ export default function DoctorDashboardPage() {
         <PatientLookupCard />
       </div>
       <div className="mt-4">
-        <ReportsSection />
+        <DoctorReports />
+      </div>
+      <div className="mt-4">
+        <DoctorAnalyticsCard />
       </div>
     </div>
   );

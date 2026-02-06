@@ -18,7 +18,7 @@ export async function GET() {
 
   const [rows] = await db.execute<CountRow[]>(
     `
-    SELECT COUNT(*) as cnt
+    SELECT COUNT(*) AS cnt
     FROM notifications n
     WHERE
       n.organization_id = ?
@@ -29,5 +29,5 @@ export async function GET() {
     [me.organizationId, me.branchId, me.id]
   );
 
-  return NextResponse.json({ unread: Number(rows?.[0]?.cnt ?? 0) });
+  return NextResponse.json({ count: Number(rows?.[0]?.cnt ?? 0) });
 }

@@ -7,13 +7,22 @@ type NotificationRow = RowDataPacket & {
   id: number;
   title: string;
   body: string | null;
-  severity: "info" | "task" | "critical";
-  priority: "low" | "normal" | "high" | "critical";
-  status: "unread" | "read" | "acted";
+  severity: string;
+  priority: number;
+  status: string;
   route: string | null;
   action_label: string | null;
-  created_at: Date;
+  created_at: string;
 };
+
+function normalizeStatus(raw: string | null): string | null {
+  if (!raw) return null;
+  const s = raw.trim().toLowerCase();
+  if (s === "unread") return "UNREAD";
+  if (s === "read") return "READ";
+  if (s === "archived") return "ARCHIVED";
+  return null;
+}
 
 export async function GET(req: Request) {
   const me = await getCurrentUser();
@@ -27,21 +36,18 @@ export async function GET(req: Request) {
   }
 
   const url = new URL(req.url);
-  const status = (url.searchParams.get("status") || "unread").toLowerCase();
-  const limit = Math.min(
-    parseInt(url.searchParams.get("limit") || "20", 10) || 20,
-    50
+
+  // Default status = UNREAD if not provided/invalid (so SQL+params always match)
+  const status = normalizeStatus(url.searchParams.get("status")) ?? "UNREAD";
+
+  const limitRaw = url.searchParams.get("limit");
+  // Clamp + force integer
+  const limit = Math.max(
+    1,
+    Math.min(50, Math.trunc(Number(limitRaw ?? 20) || 20))
   );
 
-  const whereStatus = status === "all" ? "" : "AND n.status = ?";
-
-  const params: any[] = [me.organizationId, me.branchId, me.id];
-  if (status !== "all") params.push(status);
-
-  params.push(limit);
-
-  const [rows] = await db.execute<NotificationRow[]>(
-    `
+  const sql = `
     SELECT
       n.id, n.title, n.body, n.severity, n.priority, n.status,
       n.route, n.action_label, n.created_at
@@ -50,24 +56,19 @@ export async function GET(req: Request) {
       n.organization_id = ?
       AND n.branch_id = ?
       AND n.recipient_user_id = ?
-      ${whereStatus}
+      AND n.status = ?
     ORDER BY n.created_at DESC
-    LIMIT ?
-    `,
-    params
-  );
+    LIMIT ${limit}
+  `;
 
-  return NextResponse.json({
-    items: rows.map((r) => ({
-      id: r.id,
-      title: r.title,
-      body: r.body,
-      severity: r.severity,
-      priority: r.priority,
-      status: r.status,
-      route: r.route,
-      actionLabel: r.action_label,
-      createdAt: r.created_at.toISOString(),
-    })),
-  });
+  // NOTE: me.id might be bigint in DB; passing as string is safest if your session stores it as number.
+  const params: Array<string | number> = [
+    me.organizationId,
+    me.branchId,
+    String(me.id),
+    status,
+  ];
+
+  const [rows] = await db.execute<NotificationRow[]>(sql, params);
+  return NextResponse.json({ rows });
 }
