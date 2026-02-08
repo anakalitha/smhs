@@ -1,3 +1,4 @@
+// src\app\(protected)\doctor\visits\[visitId]\consultation\prescription\page.tsx
 import { redirect } from "next/navigation";
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db";

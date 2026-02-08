@@ -1,3 +1,4 @@
+// src\lib\session.ts
 import { cookies } from "next/headers";
 import crypto from "crypto";
 import type { RowDataPacket, ResultSetHeader } from "mysql2/promise";

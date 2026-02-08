@@ -1,3 +1,4 @@
+// src\app\api\auth\login\route.ts
 import { NextResponse } from "next/server";
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db";

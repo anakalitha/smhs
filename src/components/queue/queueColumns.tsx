@@ -18,11 +18,7 @@ export const receptionQueueColumns: Column<BaseQueueRow>[] = [
     cell: (q) => <span className="text-[#646179]">{q.phone || "—"}</span>,
   },
   {
-    header: "Referred By",
-    cell: (q) => <span className="text-[#646179]">{q.referredBy || "—"}</span>,
-  },
-  {
-    header: "Consulting Doctor",
+    header: "Doctor",
     cell: (q) => <span className="text-[#646179]">{q.doctor}</span>,
   },
   {

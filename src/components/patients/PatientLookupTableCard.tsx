@@ -1,4 +1,4 @@
-// src\components\patients\PatientLookupTableCard.tsx
+// src/components/patients/PatientLookupTableCard.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -42,6 +42,7 @@ export default function PatientLookupTableCard({
   onViewPatient,
   apiUrl = "/api/reception/patients",
   defaultPageSize = 10,
+  refreshKey = 0,
 }: {
   title?: string;
   subtitle?: string;
@@ -54,6 +55,9 @@ export default function PatientLookupTableCard({
   apiUrl?: string;
 
   defaultPageSize?: number;
+
+  /** Parent can bump this number to force a reload without a full page refresh */
+  refreshKey?: number;
 }) {
   const patientColumns: Column<PatientRow>[] = useMemo(() => {
     return (
@@ -167,14 +171,15 @@ export default function PatientLookupTableCard({
     }
   }
 
-  // initial load + whenever page/pageSize/sort changes
+  // initial load + whenever page/pageSize/sort changes OR refreshKey changes
   useEffect(() => {
-    loadPatients();
+    // If parent bumped refreshKey, go back to page 1 so the new record is visible immediately.
+    if (refreshKey !== 0) setPage(1);
+    loadPatients({ page: refreshKey !== 0 ? 1 : page });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pageSize, sortBy, sortDir]);
+  }, [page, pageSize, sortBy, sortDir, refreshKey]);
 
   function onSearch() {
-    // reset to first page when searching
     setPage(1);
     loadPatients({ search: searchText, page: 1 });
   }
@@ -237,7 +242,6 @@ export default function PatientLookupTableCard({
         </div>
       </div>
 
-      {/* Optional: simple sort controls (server-side) */}
       <div className="px-4 pt-3 flex flex-wrap items-center gap-2 text-xs text-[#646179]">
         <span className="font-medium">Sort:</span>
 
@@ -315,7 +319,6 @@ export default function PatientLookupTableCard({
           ]}
         />
 
-        {/* Pagination */}
         <div className="mt-4 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
           <div className="text-xs text-[#646179]">
             Showing {totalRows === 0 ? 0 : (page - 1) * pageSize + 1}–

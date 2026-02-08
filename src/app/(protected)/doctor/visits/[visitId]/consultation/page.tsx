@@ -1,3 +1,4 @@
+// src\app\(protected)\doctor\visits\[visitId]\consultation\page.tsx
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/session";
 import ConsultationClient from "./ConsultationClient";

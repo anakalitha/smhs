@@ -17,6 +17,8 @@ import QueueTableCard, {
 import { receptionQueueColumns } from "@/components/queue/queueColumns";
 import PatientLookupTableCard from "@/components/patients/PatientLookupTableCard";
 import NotificationsPanel from "@/components/notifications/NotificationsPanel";
+import RegisterPatientModal from "@/components/reception/quick-opd/RegisterPatientModal";
+import ReceptionReportCards from "@/components/reception/reports/ReceptionReportCards";
 
 type QueueRow = {
   queueEntryId: number;
@@ -71,10 +73,12 @@ export default function ReceptionDashboard() {
   const [patientError, setPatientError] = useState<string | null>(null);
   const [patientPage, setPatientPage] = useState(1);
   const pageSize = 15;
+  const [registerOpen, setRegisterOpen] = useState(false);
 
   // ✅ Edit modal state (Option A)
   const [editOpen, setEditOpen] = useState(false);
   const [editVisitId, setEditVisitId] = useState<number | null>(null);
+  const [patientLookupRefreshKey, setPatientLookupRefreshKey] = useState(0);
 
   function openEditModal(visitId: number) {
     setEditVisitId(visitId);
@@ -146,8 +150,7 @@ export default function ReceptionDashboard() {
   return (
     <div className="min-h-[calc(100vh-120px)] bg-[#F2F2F2]">
       <div className="p-6">
-        <ReceptionHeader registerDisabled={true} />
-
+        <ReceptionHeader onRegisterPatient={() => setRegisterOpen(true)} />
         <ReceptionKpis
           kpis={kpis}
           loading={loadingKpis}
@@ -155,88 +158,79 @@ export default function ReceptionDashboard() {
         />
 
         <div className="mt-6 grid grid-cols-1 gap-5">
-          {/* <VisitRegistrationForm
-            mode="create"
-            onSuccess={async () => {
-              await loadDashboard();
-              await loadPatients("", 1);
-            }}
-          /> */}
           <div className="grid grid-cols-12 gap-5 items-start">
-            <div className="col-span-12 lg:col-span-9">
-              <VisitRegistrationForm
-                mode="create"
-                onSuccess={async () => {
-                  await loadDashboard();
-                  await loadPatients("", 1);
-                }}
+            <div className="col-span-12 lg:col-span-8">
+              <QueueTableCard
+                rows={queueRows}
+                columns={receptionQueueColumns}
+                loading={loadingQueue}
+                onRefresh={loadDashboard}
+                footerHint="Tip: Use the action menu to change status, edit patient, or generate bill."
+                groupedActions={(row) => [
+                  {
+                    items: [
+                      {
+                        label: "Mark as Waiting",
+                        onClick: () =>
+                          changeQueueStatus(row.queueEntryId, "WAITING"),
+                      },
+                      {
+                        label: "Mark as Next",
+                        onClick: () =>
+                          changeQueueStatus(row.queueEntryId, "NEXT"),
+                      },
+                      {
+                        label: "Mark as In Room",
+                        onClick: () =>
+                          changeQueueStatus(row.queueEntryId, "IN_ROOM"),
+                      },
+                      {
+                        label: "Mark as Done",
+                        onClick: () =>
+                          changeQueueStatus(row.queueEntryId, "DONE"),
+                      },
+                    ],
+                  },
+                  {
+                    separator: true,
+                    items: [
+                      {
+                        label: "Edit Patient",
+                        onClick: () => openEditModal(row.visitId),
+                      },
+                      {
+                        label: "View Patient Data",
+                        onClick: () =>
+                          router.push(`/patients/${row.patientId}`),
+                      },
+                      {
+                        label: "Generate Bill",
+                        onClick: () =>
+                          window.open(
+                            `/reception/bill/${row.visitId}`,
+                            "_blank",
+                            "noopener,noreferrer"
+                          ),
+                      },
+                    ],
+                  },
+                ]}
               />
             </div>
 
-            <div className="col-span-12 lg:col-span-3">
+            <div className="col-span-12 lg:col-span-4">
               <div className="lg:sticky lg:top-6">
                 <NotificationsPanel />
               </div>
             </div>
           </div>
-
-          <QueueTableCard
-            rows={queueRows}
-            columns={receptionQueueColumns}
-            loading={loadingQueue}
-            onRefresh={loadDashboard}
-            footerHint="Tip: Use the action menu to change status, edit patient, or generate bill."
-            groupedActions={(row) => [
-              {
-                items: [
-                  {
-                    label: "Mark as Waiting",
-                    onClick: () =>
-                      changeQueueStatus(row.queueEntryId, "WAITING"),
-                  },
-                  {
-                    label: "Mark as Next",
-                    onClick: () => changeQueueStatus(row.queueEntryId, "NEXT"),
-                  },
-                  {
-                    label: "Mark as In Room",
-                    onClick: () =>
-                      changeQueueStatus(row.queueEntryId, "IN_ROOM"),
-                  },
-                  {
-                    label: "Mark as Done",
-                    onClick: () => changeQueueStatus(row.queueEntryId, "DONE"),
-                  },
-                ],
-              },
-              {
-                separator: true,
-                items: [
-                  {
-                    label: "Edit Patient",
-                    onClick: () => openEditModal(row.visitId),
-                  },
-                  {
-                    label: "View Patient Data",
-                    onClick: () => router.push(`/patients/${row.patientId}`),
-                  },
-                  {
-                    label: "Generate Bill",
-                    onClick: () =>
-                      window.open(
-                        `/reception/bill/${row.visitId}`,
-                        "_blank",
-                        "noopener,noreferrer"
-                      ),
-                  },
-                ],
-              },
-            ]}
-          />
         </div>
+
+        <ReceptionReportCards />
 
         {/* Patient Lookup */}
         <PatientLookupTableCard
+          refreshKey={patientLookupRefreshKey}
           onViewPatient={(patientId) => router.push(`/patients/${patientId}`)}
         />
       </div>
@@ -249,9 +243,25 @@ export default function ReceptionDashboard() {
         onClose={() => setEditOpen(false)}
         onSaved={async () => {
           await loadDashboard();
-          await loadPatients("", 1);
+          setPatientLookupRefreshKey((k) => k + 1);
         }}
       />
+
+      <RegisterPatientModal
+        open={registerOpen}
+        onClose={() => setRegisterOpen(false)}
+        title="Register Patient"
+      >
+        <VisitRegistrationForm
+          mode="create"
+          showFetch={true}
+          onSuccess={async () => {
+            setRegisterOpen(false);
+            await loadDashboard();
+            setPatientLookupRefreshKey((k) => k + 1);
+          }}
+        />
+      </RegisterPatientModal>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+// src\components\notifications\NotificationsPanel.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";

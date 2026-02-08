@@ -1,14 +1,29 @@
-// src/app/api/reception/register/route.ts
+// src\app\api\reception\register\route.ts
 import { NextResponse } from "next/server";
 import type { RowDataPacket, ResultSetHeader } from "mysql2/promise";
+
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
 
 type MaxTokenRow = RowDataPacket & { max_token: number };
 type ModeRow = RowDataPacket & { code: string };
+type RateRow = RowDataPacket & { rate: number };
+type BranchRow = RowDataPacket & { code: string };
 
 function isValidPhone(phone: string) {
   return /^[0-9]{10}$/.test(phone);
+}
+
+function todayLocalYYYYMMDD() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function clamp(n: number, min: number, max: number) {
+  return Math.min(Math.max(n, min), max);
 }
 
 export async function POST(req: Request) {
@@ -31,56 +46,54 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json()) as {
-    visitDate?: string; // YYYY-MM-DD
+    visitDate?: string;
     name?: string;
     phone?: string;
     referralId?: string | null;
     doctorId?: number;
-    consultingFee?: number | string;
-    paymentMode?: string;
-    payStatus?: "ACCEPTED" | "PENDING" | "WAIVED";
+
+    serviceId?: number;
+    discountAmount?: number | string;
+    paidNowAmount?: number | string;
+    paymentMode?: string; // required only if paidNowAmount > 0
+    remarks?: string;
   };
 
   const visitDate = String(body.visitDate || "").trim();
   const name = (body.name || "").trim();
   const phoneRaw = (body.phone || "").trim();
   const phoneClean = phoneRaw ? phoneRaw.replace(/\s+/g, "") : null;
+
   const referralId = body.referralId || null;
   const doctorId = Number(body.doctorId || 0);
-  const paymentMode = body.paymentMode || "CASH";
-  const payStatus = body.payStatus || "ACCEPTED";
+  const serviceId = Number(body.serviceId || 0);
 
-  const feeNum =
-    typeof body.consultingFee === "string"
-      ? Number(body.consultingFee)
-      : Number(body.consultingFee);
+  const discountReq =
+    typeof body.discountAmount === "string"
+      ? Number(body.discountAmount)
+      : Number(body.discountAmount || 0);
 
-  // console.log("🔎 Register payload:", {
-  //   visitDate,
-  //   name,
-  //   phoneClean,
-  //   referralId,
-  //   doctorId,
-  //   paymentMode,
-  //   payStatus,
-  //   feeNum,
-  // });
+  const paidNowReq =
+    typeof body.paidNowAmount === "string"
+      ? Number(body.paidNowAmount)
+      : Number(body.paidNowAmount || 0);
 
-  // --- Validation ---
-  if (!visitDate || !/^\d{4}-\d{2}-\d{2}$/.test(visitDate)) {
+  const paymentModeCode = (body.paymentMode || "").trim();
+  const remarks = body.remarks?.trim() || null;
+
+  // ---------------- Validation ----------------
+  if (!visitDate || !/^\d{4}-\d{2}-\d{2}$/.test(visitDate))
     return NextResponse.json(
       { error: "Visit date is required." },
       { status: 400 }
     );
-  }
 
-  const today = new Date().toISOString().slice(0, 10);
-  if (visitDate > today) {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  if (visitDate > todayIso)
     return NextResponse.json(
       { error: "Visit date cannot be in the future." },
       { status: 400 }
     );
-  }
 
   if (!name)
     return NextResponse.json({ error: "Name is required." }, { status: 400 });
@@ -97,18 +110,23 @@ export async function POST(req: Request) {
       { status: 400 }
     );
 
-  if (!Number.isFinite(feeNum) || feeNum < 0)
+  if (!serviceId)
     return NextResponse.json(
-      { error: "Consulting fee must be a valid number." },
+      { error: "Service is required." },
       { status: 400 }
     );
 
-  if (payStatus !== "WAIVED" && feeNum === 0) {
+  if (!Number.isFinite(discountReq) || discountReq < 0)
     return NextResponse.json(
-      { error: "Fee cannot be 0 unless Waived." },
+      { error: "Discount must be a valid number." },
       { status: 400 }
     );
-  }
+
+  if (!Number.isFinite(paidNowReq) || paidNowReq < 0)
+    return NextResponse.json(
+      { error: "Paid-now must be a valid number." },
+      { status: 400 }
+    );
 
   const conn = await db.getConnection();
   try {
@@ -116,12 +134,11 @@ export async function POST(req: Request) {
 
     // 1) Validate doctor
     const [docRows] = await conn.execute<RowDataPacket[]>(
-      `SELECT d.id
-       FROM doctors d
-       WHERE d.id = :doctor_id
-         AND d.is_active = 1
-         AND d.organization_id = :org_id
-         AND d.branch_id = :branch_id
+      `SELECT id FROM doctors
+       WHERE id = :doctor_id
+         AND is_active = 1
+         AND organization_id = :org_id
+         AND branch_id = :branch_id
        LIMIT 1`,
       {
         doctor_id: doctorId,
@@ -129,78 +146,128 @@ export async function POST(req: Request) {
         branch_id: me.branchId,
       }
     );
-
     if (docRows.length === 0) {
       await conn.rollback();
+      return NextResponse.json({ error: "Invalid doctor." }, { status: 400 });
+    }
+
+    // 2) Validate service + branch rate
+    const [rateRows] = await conn.execute<RateRow[]>(
+      `
+      SELECT r.rate
+      FROM services s
+      JOIN service_rates r ON r.service_id = s.id
+      WHERE s.id = :service_id
+        AND s.organization_id = :org_id
+        AND s.is_active = 1
+        AND r.branch_id = :branch_id
+        AND r.is_active = 1
+      LIMIT 1
+      FOR UPDATE
+      `,
+      {
+        service_id: serviceId,
+        org_id: me.organizationId,
+        branch_id: me.branchId,
+      }
+    );
+    if (rateRows.length === 0) {
+      await conn.rollback();
       return NextResponse.json(
-        { error: "Invalid doctor selection." },
+        { error: "Invalid service or rate not configured for this branch." },
         { status: 400 }
       );
     }
 
-    // 2) Get org + branch codes
+    const gross = Number(rateRows[0].rate || 0);
+    if (!Number.isFinite(gross) || gross < 0) {
+      await conn.rollback();
+      return NextResponse.json(
+        { error: "Invalid configured rate for this service." },
+        { status: 400 }
+      );
+    }
+
+    const discount = clamp(discountReq, 0, gross);
+    const net = clamp(gross - discount, 0, gross);
+    const paidNow = clamp(paidNowReq, 0, net);
+
+    if (paidNow > 0 && !paymentModeCode) {
+      await conn.rollback();
+      return NextResponse.json(
+        { error: "Payment mode is required when collecting paid-now amount." },
+        { status: 400 }
+      );
+    }
+
+    // 3) Patient counter
+    // 3) Patient counter + branch code + YYYYMM from visitDate
     const orgId = Number(me.organizationId);
     const branchId = Number(me.branchId);
 
-    const [codeRows] = await conn.execute<RowDataPacket[]>(
-      `SELECT
-         (SELECT code FROM organizations WHERE id = :org LIMIT 1) AS org_code,
-         (SELECT code FROM branches WHERE id = :branch LIMIT 1) AS branch_code`,
-      { org: orgId, branch: branchId }
+    // Parse visit date parts
+    const parts = visitDate.split("-");
+    const admissionYear = parseInt(parts[0], 10);
+    const admissionMonth = parseInt(parts[1], 10);
+    const yyyy = String(admissionYear);
+    const mm = String(admissionMonth).padStart(2, "0");
+
+    // Get branch code (SMNH-MCC)
+    const [branchRows] = await conn.execute<BranchRow[]>(
+      `SELECT code
+   FROM branches
+   WHERE id = :branch_id
+     AND organization_id = :org_id
+   LIMIT 1
+   FOR UPDATE`,
+      { branch_id: branchId, org_id: orgId }
     );
 
-    const orgCode = String(codeRows[0]?.org_code ?? "").trim();
-    const branchCode = String(codeRows[0]?.branch_code ?? "").trim();
-
-    if (!orgCode || !branchCode) {
+    if (branchRows.length === 0 || !branchRows[0].code) {
       await conn.rollback();
-      return NextResponse.json(
-        { error: "Organization/Branch code not configured." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Invalid branch." }, { status: 400 });
     }
 
-    // 3) Generate patient code (LOCKED)
+    const branchCode = String(branchRows[0].code).trim();
+
+    // Atomic counter (safe)
     const [ctrRows] = await conn.execute<RowDataPacket[]>(
-      `SELECT next_seq
-       FROM patient_counters
-       WHERE organization_id = :org AND branch_id = :branch
-       FOR UPDATE`,
+      `SELECT next_seq FROM patient_counters
+   WHERE organization_id = :org AND branch_id = :branch
+   FOR UPDATE`,
       { org: orgId, branch: branchId }
     );
 
-    let seq: number;
-
+    let seq = 1;
     if (ctrRows.length === 0) {
-      seq = 1;
       await conn.execute(
         `INSERT INTO patient_counters (organization_id, branch_id, next_seq)
-         VALUES (:org, :branch, 2)`,
+     VALUES (:org, :branch, 2)`,
         { org: orgId, branch: branchId }
       );
     } else {
       seq = Number(ctrRows[0].next_seq);
       await conn.execute(
         `UPDATE patient_counters
-         SET next_seq = next_seq + 1
-         WHERE organization_id = :org AND branch_id = :branch`,
+     SET next_seq = next_seq + 1
+     WHERE organization_id = :org AND branch_id = :branch`,
         { org: orgId, branch: branchId }
       );
     }
 
-    const patientCode = `${orgCode}_${branchCode}_${seq}`;
+    // Final code: OP_SMNH-MCC_2025091
+    const patientCode = `OP_${branchCode}_${yyyy}${mm}${seq}`;
 
-    // 4) Insert patient (ALWAYS NEW for Quick OPD)
-    const [ins] = await conn.execute<ResultSetHeader>(
+    // 4) Insert patient
+    const [pIns] = await conn.execute<ResultSetHeader>(
       `INSERT INTO patients (patient_code, full_name, phone)
        VALUES (:code, :name, :phone)`,
       { code: patientCode, name, phone: phoneClean }
     );
-
-    const patientId = ins.insertId;
+    const patientId = pIns.insertId;
 
     // 5) Create visit
-    const [visitIns] = await conn.execute<ResultSetHeader>(
+    const [vIns] = await conn.execute<ResultSetHeader>(
       `INSERT INTO visits (
          patient_id,
          organization_id,
@@ -226,86 +293,143 @@ export async function POST(req: Request) {
         visit_date: visitDate,
       }
     );
+    const visitId = vIns.insertId;
 
-    const visitId = visitIns.insertId;
+    // 6) Insert visit charge
+    await conn.execute(
+      `INSERT INTO visit_charges (
+         visit_id,
+         service_id,
+         gross_amount,
+         discount_amount,
+         net_amount
+       )
+       VALUES (
+         :visit_id,
+         :service_id,
+         :gross,
+         :discount,
+         :net
+       )`,
+      {
+        visit_id: visitId,
+        service_id: serviceId,
+        gross,
+        discount,
+        net,
+      }
+    );
 
-    // 6) Generate token (LOCKED)
-    const today = todayLocalYYYYMMDD();
-    if (visitDate > today) {
-      return NextResponse.json(
-        { error: "Visit date cannot be in the future." },
-        { status: 400 }
-      );
-    }
-
+    // 7) Queue token (only if visitDate == today local)
+    const todayLocal = todayLocalYYYYMMDD();
     let nextToken: number | null = null;
-
-    if (today) {
+    if (visitDate === todayLocal) {
       const [tokenRows] = await conn.execute<MaxTokenRow[]>(
         `SELECT COALESCE(MAX(q.token_no), 0) AS max_token
-       FROM queue_entries q
-       JOIN visits v ON v.id = q.visit_id
-       WHERE v.branch_id = :branch_id
-         AND v.visit_date = CURDATE()
-       FOR UPDATE`,
+         FROM queue_entries q
+         JOIN visits v ON v.id = q.visit_id
+         WHERE v.branch_id = :branch_id
+           AND v.visit_date = CURDATE()
+         FOR UPDATE`,
         { branch_id: me.branchId }
       );
-
-      nextToken = Number(tokenRows[0]?.max_token ?? 0) + 1;
-
+      nextToken = Number(tokenRows[0].max_token) + 1;
       await conn.execute(
         `INSERT INTO queue_entries (visit_id, token_no, status)
-       VALUES (:visit_id, :token_no, 'WAITING')`,
+         VALUES (:visit_id, :token_no, 'WAITING')`,
         { visit_id: visitId, token_no: nextToken }
       );
     }
 
-    // 7) Validate payment mode
-    const [modeRows] = await conn.execute<ModeRow[]>(
-      `SELECT code FROM payment_modes
-       WHERE code = :code AND is_active = 1
-       LIMIT 1`,
-      { code: paymentMode }
-    );
+    // 8) Payment (optional)
+    if (paidNow > 0) {
+      const [modeRows] = await conn.execute<ModeRow[]>(
+        `SELECT code FROM payment_modes
+         WHERE code = :code AND is_active = 1
+         LIMIT 1`,
+        { code: paymentModeCode }
+      );
+      if (modeRows.length === 0) {
+        await conn.rollback();
+        return NextResponse.json(
+          { error: "Invalid payment mode." },
+          { status: 400 }
+        );
+      }
 
-    if (modeRows.length === 0) {
-      await conn.rollback();
-      return NextResponse.json(
-        { error: "Invalid or inactive payment mode." },
-        { status: 400 }
+      const [payIns] = await conn.execute<ResultSetHeader>(
+        `INSERT INTO payments (
+           visit_id,
+           service_id,
+           amount,
+           payment_mode_code,
+           pay_status,
+           direction,
+           note,
+           created_by
+         )
+         VALUES (
+           :visit_id,
+           :service_id,
+           :amount,
+           :mode,
+           'ACCEPTED',
+           'PAYMENT',
+           :note,
+           :user_id
+         )`,
+        {
+          visit_id: visitId,
+          service_id: serviceId,
+          amount: paidNow,
+          mode: paymentModeCode,
+          note: remarks,
+          user_id: (me as any).id ?? null,
+        }
+      );
+      const paymentId = payIns.insertId;
+
+      await conn.execute(
+        `INSERT INTO payment_allocations (
+           payment_id,
+           visit_id,
+           service_id,
+           amount
+         )
+         VALUES (
+           :payment_id,
+           :visit_id,
+           :service_id,
+           :amount
+         )`,
+        {
+          payment_id: paymentId,
+          visit_id: visitId,
+          service_id: serviceId,
+          amount: paidNow,
+        }
       );
     }
 
-    // 8) Insert payment
-    await conn.execute(
-      `INSERT INTO payments (visit_id, fee_type, amount, payment_mode, pay_status)
-       VALUES (:visit_id, 'CONSULTATION', :amount, :mode, :status)`,
-      {
-        visit_id: visitId,
-        amount: feeNum,
-        mode: paymentMode,
-        status: payStatus,
-      }
-    );
-
     await conn.commit();
-    // console.log("✅ Returning visitId:", visitId);
+
     return NextResponse.json({
       ok: true,
       visitId,
-      queued: today,
-      queueRow: today
-        ? {
-            token: nextToken,
-            patientId: patientCode,
-            visitId,
-            name,
-            phone: phoneClean ?? "",
-            status: "WAITING",
-          }
-        : null,
+      queued: visitDate === todayLocal,
+      queueRow:
+        visitDate === todayLocal
+          ? {
+              token: nextToken,
+              patientId: patientCode,
+              visitId,
+              name,
+              phone: phoneClean ?? "",
+              status: "WAITING",
+            }
+          : null,
     });
-  } catch (e: unknown) {
+  } catch (e) {
     await conn.rollback();
     console.error("❌ Failed to register patient:", e);
     return NextResponse.json(
@@ -315,12 +439,4 @@ export async function POST(req: Request) {
   } finally {
     conn.release();
   }
-}
-
-function todayLocalYYYYMMDD() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
 }

@@ -20,8 +20,8 @@ export async function GET() {
     return NextResponse.json({ error: "Invalid org/branch." }, { status: 400 });
   }
 
-  const orgId = me.organizationId;
-  const branchId = me.branchId;
+  const orgId = Number(me.organizationId);
+  const branchId = Number(me.branchId);
 
   type OpsRow = RowDataPacket & {
     registeredToday: number | null;
@@ -29,14 +29,12 @@ export async function GET() {
     done: number | null;
   };
 
-  type PayRow = RowDataPacket & {
-    accepted: number | null;
-    pending: number | null;
-    waived: number | null;
-  };
+  type ServiceRow = RowDataPacket & { id: number };
 
   type QueueRow = RowDataPacket & {
     queueEntryId: number;
+    visitId: number;
+    patientDbId: number;
     token: number;
     status: "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
     patientId: string;
@@ -47,8 +45,31 @@ export async function GET() {
     createdAt: string;
   };
 
+  type PayKpiRow = RowDataPacket & {
+    accepted: number | null;
+    waived: number | null;
+    pending: number | null;
+  };
+
+  type PayKpis = { accepted: number; waived: number; pending: number };
+
   try {
-    // Ops KPIs for today (visit_date)
+    // 0) Resolve CONSULTATION service_id (org-scoped)
+    const [svcRows] = await db.execute<ServiceRow[]>(
+      `
+      SELECT id
+      FROM services
+      WHERE organization_id = :org
+        AND code = 'CONSULTATION'
+        AND is_active = 1
+      LIMIT 1
+      `,
+      { org: orgId }
+    );
+
+    const consultationServiceId = svcRows[0]?.id ?? null;
+
+    // 1) Ops KPIs for today (visit_date)
     const [opsRows] = await db.execute<OpsRow[]>(
       `SELECT
          COUNT(DISTINCT v.id) AS registeredToday,
@@ -64,25 +85,71 @@ export async function GET() {
 
     const ops = opsRows[0] ?? { registeredToday: 0, waiting: 0, done: 0 };
 
-    // Financial KPIs for today (payment timestamp)
-    const [payRows] = await db.execute<PayRow[]>(
-      `SELECT
-         COALESCE(SUM(CASE WHEN p.pay_status = 'ACCEPTED' THEN p.amount ELSE 0 END), 0) AS accepted,
-         COALESCE(SUM(CASE WHEN p.pay_status = 'PENDING' THEN p.amount ELSE 0 END), 0) AS pending,
-         COALESCE(SUM(CASE WHEN p.pay_status = 'WAIVED' THEN p.amount ELSE 0 END), 0) AS waived
-       FROM payments p
-       JOIN visits v ON v.id = p.visit_id
-       WHERE v.organization_id = :org
-         AND v.branch_id = :branch
-         AND p.fee_type = 'CONSULTATION'
-         AND p.created_at >= CURDATE()
-         AND p.created_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)`,
-      { org: orgId, branch: branchId }
-    );
+    // 2) Financial KPIs (consultation only) for today
+    // accepted = sum(payments PAYMENT direction today)
+    // waived   = sum(visit_charges.discount_amount today)
+    // pending  = sum(net_amount - paid_allocations) today
+    let payKpis: PayKpis = { accepted: 0, waived: 0, pending: 0 };
 
-    const pay = payRows[0] ?? { accepted: 0, pending: 0, waived: 0 };
+    if (consultationServiceId) {
+      const [payRows] = await db.execute<PayKpiRow[]>(
+        `
+        SELECT
+          -- Collected today (payments created today)
+          COALESCE((
+            SELECT SUM(p.amount)
+            FROM payments p
+            JOIN visits v ON v.id = p.visit_id
+            WHERE v.organization_id = :org
+              AND v.branch_id = :branch
+              AND p.service_id = :svc
+              AND p.direction = 'PAYMENT'
+              AND p.pay_status = 'ACCEPTED'
+              AND p.created_at >= CURDATE()
+              AND p.created_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+          ), 0) AS accepted,
 
-    // Today’s Queue rows (visit_date)
+          -- Waived today = discount total on today's visits
+          COALESCE((
+            SELECT SUM(vc.discount_amount)
+            FROM visit_charges vc
+            JOIN visits v ON v.id = vc.visit_id
+            WHERE v.organization_id = :org
+              AND v.branch_id = :branch
+              AND v.visit_date = CURDATE()
+              AND vc.service_id = :svc
+          ), 0) AS waived,
+
+          -- Pending today = sum(net - paid) for today's visits
+          COALESCE((
+            SELECT SUM(GREATEST(vc.net_amount - COALESCE(pa.paid, 0), 0))
+            FROM visit_charges vc
+            JOIN visits v ON v.id = vc.visit_id
+            LEFT JOIN (
+              SELECT visit_id, service_id, SUM(amount) AS paid
+              FROM payment_allocations
+              GROUP BY visit_id, service_id
+            ) pa ON pa.visit_id = vc.visit_id AND pa.service_id = vc.service_id
+            WHERE v.organization_id = :org
+              AND v.branch_id = :branch
+              AND v.visit_date = CURDATE()
+              AND vc.service_id = :svc
+          ), 0) AS pending
+        `,
+        { org: orgId, branch: branchId, svc: consultationServiceId }
+      );
+
+      const row = payRows[0];
+      if (row) {
+        payKpis = {
+          accepted: Number(row.accepted ?? 0),
+          waived: Number(row.waived ?? 0),
+          pending: Number(row.pending ?? 0),
+        };
+      }
+    }
+
+    // 3) Today’s Queue rows (visit_date)
     const [queueRows] = await db.execute<QueueRow[]>(
       `SELECT
          q.id AS queueEntryId,
@@ -113,9 +180,10 @@ export async function GET() {
         registeredToday: Number(ops.registeredToday || 0),
         waiting: Number(ops.waiting || 0),
         done: Number(ops.done || 0),
-        accepted: Number(pay.accepted || 0),
-        pending: Number(pay.pending || 0),
-        waived: Number(pay.waived || 0),
+
+        accepted: Number(payKpis.accepted || 0),
+        pending: Number(payKpis.pending || 0),
+        waived: Number(payKpis.waived || 0),
       },
       todaysQueue: queueRows.map((r) => ({
         queueEntryId: Number(r.queueEntryId),

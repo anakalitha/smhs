@@ -1,16 +1,8 @@
+// src/app/api/visits/[visitId]/fees/route.ts
 import { NextResponse } from "next/server";
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
-
-type FeeRow = RowDataPacket & {
-  paymentId: number;
-  feeType: "CONSULTATION" | "SCAN" | "PAP_SMEAR" | "CTG" | "PHARMACY";
-  baseAmount: number;
-  amount: number;
-  payStatus: "ACCEPTED" | "PENDING" | "WAIVED";
-  paymentMode: string;
-};
 
 type VisitHdr = RowDataPacket & {
   visitId: number;
@@ -21,23 +13,19 @@ type VisitHdr = RowDataPacket & {
   doctorName: string;
 };
 
-function feeLabel(t: FeeRow["feeType"]) {
-  switch (t) {
-    case "CONSULTATION":
-      return "Consultation Fee";
-    case "SCAN":
-      return "Scan Fee";
-    case "PAP_SMEAR":
-      return "PAP Smear Fee";
-    case "CTG":
-      return "CTG Fee";
-    case "PHARMACY":
-      return "Pharmacy Fee";
-  }
-}
+type FeeLine = RowDataPacket & {
+  serviceId: number;
+  serviceCode: string;
+  serviceName: string;
+  gross: number;
+  discount: number;
+  net: number;
+  paid: number;
+  pending: number;
+};
 
 export async function GET(
-  req: Request,
+  _req: Request,
   context: { params: Promise<{ visitId: string }> }
 ) {
   const me = await getCurrentUser();
@@ -47,7 +35,8 @@ export async function GET(
     me.roles.includes("RECEPTION") ||
     me.roles.includes("ADMIN") ||
     me.roles.includes("SUPER_ADMIN") ||
-    me.roles.includes("DOCTOR"); // optional
+    me.roles.includes("DOCTOR");
+
   if (!allowed)
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
@@ -86,34 +75,47 @@ export async function GET(
     return NextResponse.json({ error: "Visit not found." }, { status: 404 });
   }
 
-  // Fee lines
-  const [fees] = await db.execute<FeeRow[]>(
+  // Charges + paid allocations grouped by service
+  const [lines] = await db.execute<FeeLine[]>(
     `
     SELECT
-      pay.id AS paymentId,
-      pay.fee_type AS feeType,
-      pay.base_amount AS baseAmount,
-      pay.amount AS amount,
-      pay.pay_status AS payStatus,
-      pay.payment_mode AS paymentMode
-    FROM payments pay
-    WHERE pay.visit_id = :visitId
-    ORDER BY pay.id ASC
+      s.id AS serviceId,
+      s.code AS serviceCode,
+      s.display_name AS serviceName,
+      COALESCE(SUM(vc.gross_amount), 0) AS gross,
+      COALESCE(SUM(vc.discount_amount), 0) AS discount,
+      COALESCE(SUM(vc.net_amount), 0) AS net,
+      COALESCE(pa.paid, 0) AS paid,
+      COALESCE(SUM(vc.net_amount), 0) - COALESCE(pa.paid, 0) AS pending
+    FROM visit_charges vc
+    JOIN services s ON s.id = vc.service_id
+    JOIN visits v ON v.id = vc.visit_id
+    LEFT JOIN (
+      SELECT visit_id, service_id, SUM(amount) AS paid
+      FROM payment_allocations
+      GROUP BY visit_id, service_id
+    ) pa ON pa.visit_id = vc.visit_id AND pa.service_id = vc.service_id
+    WHERE vc.visit_id = :visitId
+      AND v.organization_id = :org
+      AND v.branch_id = :branch
+    GROUP BY s.id, s.code, s.display_name, pa.paid
+    ORDER BY s.display_name ASC
     `,
-    { visitId: id }
+    { visitId: id, org: me.organizationId, branch: me.branchId }
   );
 
   return NextResponse.json({
     ok: true,
     visit: vh[0],
-    fees: fees.map((f) => ({
-      paymentId: Number(f.paymentId),
-      feeType: f.feeType,
-      displayName: feeLabel(f.feeType),
-      baseAmount: Number(f.baseAmount ?? 0),
-      amount: Number(f.amount ?? 0),
-      payStatus: f.payStatus,
-      paymentMode: f.paymentMode,
+    fees: lines.map((f) => ({
+      serviceId: Number(f.serviceId),
+      serviceCode: f.serviceCode,
+      displayName: f.serviceName,
+      gross: Number(f.gross ?? 0),
+      discount: Number(f.discount ?? 0),
+      net: Number(f.net ?? 0),
+      paid: Number(f.paid ?? 0),
+      pending: Number(f.pending ?? 0),
     })),
   });
 }

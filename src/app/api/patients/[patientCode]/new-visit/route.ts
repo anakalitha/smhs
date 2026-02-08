@@ -1,19 +1,24 @@
-// src/app/api/doctor/patients/[patientId]/new-visit/route.ts
+// src\app\api\doctor\patients\[patientCode]\new-visit\route.ts
 import { NextResponse } from "next/server";
 import type { RowDataPacket, ResultSetHeader } from "mysql2/promise";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
 
-type Ctx = { params: Promise<{ patientId: string }> };
+type Ctx = { params: Promise<{ patientCode: string }> };
 
-type MaxTokenRow = RowDataPacket & { max_token: number };
+type UserLike = { roles?: string[] } | null | undefined;
 
-function todayLocalYYYYMMDD() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+function mustBeDoctor(me: UserLike) {
+  const roles = me?.roles ?? [];
+  return (
+    roles.includes("DOCTOR") ||
+    roles.includes("ADMIN") ||
+    roles.includes("SUPER_ADMIN")
+  );
+}
+
+function isAdmin(me: { roles: string[] }) {
+  return me.roles.includes("ADMIN") || me.roles.includes("SUPER_ADMIN");
 }
 
 async function resolveDoctorIdForUser(args: {
@@ -39,21 +44,33 @@ async function resolveDoctorIdForUser(args: {
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 
-export async function POST(_req: Request, ctx: Ctx) {
+function todayLocalYYYYMMDD() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+type MaxTokenRow = RowDataPacket & { max_token: number };
+
+export async function POST(req: Request, ctx: Ctx) {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  const allowed =
-    me.roles.includes("DOCTOR") ||
-    me.roles.includes("ADMIN") ||
-    me.roles.includes("SUPER_ADMIN");
-
-  if (!allowed)
+  if (!mustBeDoctor(me))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+  const { patientCode } = await ctx.params;
+  const code = String(patientCode ?? "").trim();
+  if (!code) {
+    return NextResponse.json(
+      { error: "Invalid patientCode." },
+      { status: 400 }
+    );
+  }
 
   const orgId = me.organizationId != null ? Number(me.organizationId) : NaN;
   const branchId = me.branchId != null ? Number(me.branchId) : NaN;
-
   if (
     !Number.isFinite(orgId) ||
     orgId <= 0 ||
@@ -66,50 +83,47 @@ export async function POST(_req: Request, ctx: Ctx) {
     );
   }
 
-  const { patientId } = await ctx.params;
-  const patientCode = String(patientId ?? "").trim();
-  if (!patientCode) {
-    return NextResponse.json({ error: "Invalid patient id." }, { status: 400 });
+  const admin = isAdmin(me);
+
+  // Body: doctorId optional for ADMIN; required for doctor scope otherwise
+  const body = (await req.json().catch(() => ({}))) as { doctorId?: number };
+  const doctorIdParam = body.doctorId ? Number(body.doctorId) : null;
+
+  let doctorId: number | null = null;
+  if (admin) {
+    doctorId = doctorIdParam; // can be null (if you later want admin-all-doctors flows)
+  } else {
+    doctorId = await resolveDoctorIdForUser({ userId: me.id, orgId, branchId });
+    if (!doctorId) {
+      return NextResponse.json(
+        { error: "Doctor account not linked to doctor profile." },
+        { status: 400 }
+      );
+    }
   }
-
-  const isAdmin =
-    me.roles.includes("ADMIN") || me.roles.includes("SUPER_ADMIN");
-
-  // For now: DOCTOR can create for themselves.
-  // Admin flow (choose doctor) can be added later if needed.
-  if (isAdmin) {
-    return NextResponse.json(
-      { error: "New Visit from patient summary is doctor-only for now." },
-      { status: 400 }
-    );
-  }
-
-  const doctorId = await resolveDoctorIdForUser({
-    userId: me.id,
-    orgId,
-    branchId,
-  });
 
   if (!doctorId) {
     return NextResponse.json(
-      { error: "Doctor account is not linked to a doctor profile." },
+      { error: "Doctor is required to create visit." },
       { status: 400 }
     );
   }
+
+  const visitDate = todayLocalYYYYMMDD();
 
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
 
-    // 1) Find patient record
+    // 1) Resolve patient id by code within org/branch scope via visits OR directly from patients
     const [pRows] = await conn.execute<RowDataPacket[]>(
       `
-      SELECT id
-      FROM patients
-      WHERE patient_code = :code
+      SELECT p.id
+      FROM patients p
+      WHERE p.patient_code = :code
       LIMIT 1
       `,
-      { code: patientCode }
+      { code }
     );
 
     if (pRows.length === 0) {
@@ -120,41 +134,26 @@ export async function POST(_req: Request, ctx: Ctx) {
       );
     }
 
-    const patientDbId = Number(pRows[0].id);
-    const today = todayLocalYYYYMMDD();
+    const patientId = Number(pRows[0].id);
 
     // 2) Create visit
     const [visitIns] = await conn.execute<ResultSetHeader>(
       `
-      INSERT INTO visits (
-        patient_id,
-        organization_id,
-        branch_id,
-        doctor_id,
-        referralperson_id,
-        visit_date
-      )
-      VALUES (
-        :patient_id,
-        :org,
-        :branch,
-        :doctor_id,
-        NULL,
-        :visit_date
-      )
+      INSERT INTO visits (patient_id, organization_id, branch_id, doctor_id, visit_date)
+      VALUES (:patient_id, :org, :branch, :doctor_id, :visit_date)
       `,
       {
-        patient_id: patientDbId,
+        patient_id: patientId,
         org: orgId,
         branch: branchId,
         doctor_id: doctorId,
-        visit_date: today,
+        visit_date: visitDate,
       }
     );
 
     const visitId = Number(visitIns.insertId);
 
-    // 3) Create queue entry + token (LOCK)
+    // 3) Add to queue for today (LOCKED by branch+date)
     const [tokenRows] = await conn.execute<MaxTokenRow[]>(
       `
       SELECT COALESCE(MAX(q.token_no), 0) AS max_token
@@ -170,10 +169,8 @@ export async function POST(_req: Request, ctx: Ctx) {
     const nextToken = Number(tokenRows[0]?.max_token ?? 0) + 1;
 
     await conn.execute(
-      `
-      INSERT INTO queue_entries (visit_id, token_no, status)
-      VALUES (:visit_id, :token_no, 'WAITING')
-      `,
+      `INSERT INTO queue_entries (visit_id, token_no, status)
+       VALUES (:visit_id, :token_no, 'WAITING')`,
       { visit_id: visitId, token_no: nextToken }
     );
 
@@ -182,8 +179,9 @@ export async function POST(_req: Request, ctx: Ctx) {
     return NextResponse.json({
       ok: true,
       visitId,
-      patientCode,
+      visitDate,
       tokenNo: nextToken,
+      patientCode: code,
     });
   } catch (e) {
     await conn.rollback();

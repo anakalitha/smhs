@@ -1,3 +1,4 @@
+// src\components\ui\AddDoctorModal.tsx
 "use client";
 
 import { useState } from "react";

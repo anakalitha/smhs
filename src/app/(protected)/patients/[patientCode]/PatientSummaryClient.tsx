@@ -1,9 +1,9 @@
-// src/app/(protected)/patients/[patientId]/PatientSummaryClient.tsx
 "use client";
+
 import { useMemo, useState } from "react";
-import FeeAdjustModal from "@/components/billing/FeeAdjustModal";
 import { useRouter } from "next/navigation";
 import DataTable, { Column } from "@/components/ui/DataTable";
+import VisitConsultationChargeModal from "@/components/billing/VisitConsultationChargeModal";
 
 type VisitStatus = "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
 type PayStatus = "ACCEPTED" | "PENDING" | "WAIVED";
@@ -23,9 +23,11 @@ type VisitRow = {
   visitDate: string;
   doctor: string;
   status: VisitStatus;
-  amount: number;
-  payStatus: PayStatus;
-  paymentMode: string;
+
+  // Keep these for now (your server component can map to them)
+  amount: number; // should be consultation net amount
+  payStatus: PayStatus; // derived: ACCEPTED if pending==0, etc.
+  paymentMode: string; // optional/last mode
 };
 
 function formatINR(n: number) {
@@ -111,13 +113,13 @@ export default function PatientSummaryClient({
   visits: VisitRow[];
 }) {
   const router = useRouter();
-  const [feeModalOpen, setFeeModalOpen] = useState(false);
-  const [feeVisitId, setFeeVisitId] = useState<number | null>(null);
+
+  const [chargeModalOpen, setChargeModalOpen] = useState(false);
+  const [chargeVisitId, setChargeVisitId] = useState<number | null>(null);
 
   const [newVisitLoading, setNewVisitLoading] = useState(false);
   const [newVisitErr, setNewVisitErr] = useState<string | null>(null);
 
-  // after save, simplest is to refresh page (server component reload)
   function refreshSummary() {
     router.refresh();
   }
@@ -139,7 +141,7 @@ export default function PatientSummaryClient({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}), // doctorId not needed for normal doctor login
+          body: JSON.stringify({}),
         }
       );
 
@@ -150,7 +152,6 @@ export default function PatientSummaryClient({
         return;
       }
 
-      // Option A: go straight to consultation editor
       router.push(`/doctor/visits/${data.visitId}/consultation`);
     } catch {
       setNewVisitErr("Network error while creating new visit.");
@@ -187,13 +188,13 @@ export default function PatientSummaryClient({
         className: "w-[120px]",
       },
       {
-        header: "Fee",
+        header: "Consultation Fee (Net)",
         cell: (v) => (
           <span className="text-[#1f1f1f] font-medium">
             {formatINR(v.amount)}
           </span>
         ),
-        className: "w-[120px]",
+        className: "w-[170px]",
       },
       {
         header: "Pay Status",
@@ -303,7 +304,7 @@ export default function PatientSummaryClient({
           <div className="lg:col-span-8 space-y-5">
             <SectionCard
               title="Visits"
-              subtitle="Select a visit to generate bill, see consultation summary, tests, scans, pharmacy"
+              subtitle="Edit visit charge (Consultation) to correct historical data."
             >
               <DataTable
                 dense
@@ -314,11 +315,11 @@ export default function PatientSummaryClient({
                   {
                     items: [
                       {
-                        label: "Consultation Summary",
-                        onClick: () =>
-                          alert(
-                            `Consultation Summary for visit ${row.visitId} (next)`
-                          ),
+                        label: "Edit Visit Data",
+                        onClick: () => {
+                          setChargeVisitId(row.visitId);
+                          setChargeModalOpen(true);
+                        },
                       },
                       {
                         label: "Generate Bill",
@@ -328,35 +329,6 @@ export default function PatientSummaryClient({
                             "_blank",
                             "noopener,noreferrer"
                           ),
-                      },
-                      {
-                        label: "Waive / Adjust Fee",
-                        onClick: () => {
-                          setFeeVisitId(row.visitId);
-                          setFeeModalOpen(true);
-                        },
-                      },
-                      {
-                        label: "Order Scan",
-                        onClick: async () => {
-                          const res = await fetch(
-                            `/api/visits/${row.visitId}/orders`,
-                            {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({
-                                orderType: "SCAN",
-                                notes: "",
-                              }),
-                            }
-                          );
-                          const data = await res.json().catch(() => ({}));
-                          if (!res.ok)
-                            alert(
-                              data?.error || "Failed to create scan order."
-                            );
-                          else alert(`Scan ordered. Order ID: ${data.orderId}`);
-                        },
                       },
                     ],
                   },
@@ -368,10 +340,10 @@ export default function PatientSummaryClient({
         </div>
       </div>
 
-      <FeeAdjustModal
-        open={feeModalOpen}
-        visitId={feeVisitId}
-        onClose={() => setFeeModalOpen(false)}
+      <VisitConsultationChargeModal
+        open={chargeModalOpen}
+        visitId={chargeVisitId}
+        onClose={() => setChargeModalOpen(false)}
         onSaved={refreshSummary}
       />
     </div>
