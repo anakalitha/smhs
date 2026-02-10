@@ -67,7 +67,7 @@ export default function DataTable<T>({
   const showActions = Boolean(actions || groupedActions);
 
   return (
-    <div className="w-full overflow-hidden rounded-xl border bg-white">
+    <div className="w-full overflow-hidden rounded-xl border bg-gray-200">
       <div className="w-full overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-[#646179]">

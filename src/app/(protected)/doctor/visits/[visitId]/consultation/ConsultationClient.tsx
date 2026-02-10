@@ -86,7 +86,14 @@ function Toggle({
   );
 }
 
-export default function ConsultationClient({ visitId }: { visitId: number }) {
+export default function ConsultationClient({
+  visitId,
+  embedded = false,
+}: {
+  visitId: number;
+  /** When embedded inside another page (e.g., Patient Summary), hide page-level chrome and don't navigate away on save. */
+  embedded?: boolean;
+}) {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
@@ -327,12 +334,19 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
     // Must happen synchronously after user action; keep this function directly called by button onClick.
     window.open(pdfUrl, "_blank", "noopener,noreferrer");
 
-    // Navigate back to doctor dashboard + refresh
+    // Navigate back to doctor dashboard + refresh (skip when embedded in Patient Summary)
+    if (embedded) {
+      setOkMsg("Saved. Visit marked as DONE.");
+      router.refresh();
+      return;
+    }
+
     router.push("/doctor");
     router.refresh();
   }
 
   if (loading) {
+    if (embedded) return <div className="p-4 text-sm">Loading…</div>;
     return (
       <div className="min-h-[calc(100vh-120px)] bg-[#F2F2F2]">
         <div className="p-6 max-w-5xl mx-auto">Loading…</div>
@@ -341,6 +355,16 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
   }
 
   if (err && !visit) {
+    if (embedded) {
+      return (
+        <div className="p-4">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            {err}
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="min-h-[calc(100vh-120px)] bg-[#F2F2F2]">
         <div className="p-6 max-w-5xl mx-auto">
@@ -359,8 +383,10 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
   }
 
   return (
-    <div className="min-h-[calc(100vh-120px)] bg-[#F2F2F2]">
-      <div className="p-6 max-w-5xl mx-auto space-y-5">
+    <div className={embedded ? "" : "min-h-[calc(100vh-120px)] bg-[#F2F2F2]"}>
+      <div
+        className={embedded ? "space-y-5" : "p-6 max-w-5xl mx-auto space-y-5"}
+      >
         {/* Header */}
         <div className="rounded-2xl border bg-white shadow-sm p-5">
           <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -375,19 +401,25 @@ export default function ConsultationClient({ visitId }: { visitId: number }) {
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button
-                className="rounded-lg border bg-white px-4 py-2 text-sm hover:bg-gray-50"
-                onClick={() => router.push(`/patients/${visit?.patientCode}`)}
-              >
-                View Patient Summary
-              </button>
+              {!embedded ? (
+                <>
+                  <button
+                    className="rounded-lg border bg-white px-4 py-2 text-sm hover:bg-gray-50"
+                    onClick={() =>
+                      router.push(`/patients/${visit?.patientCode}`)
+                    }
+                  >
+                    View Patient Summary
+                  </button>
 
-              <button
-                className="rounded-lg border bg-white px-4 py-2 text-sm hover:bg-gray-50"
-                onClick={() => router.back()}
-              >
-                ← Back
-              </button>
+                  <button
+                    className="rounded-lg border bg-white px-4 py-2 text-sm hover:bg-gray-50"
+                    onClick={() => router.back()}
+                  >
+                    ← Back
+                  </button>
+                </>
+              ) : null}
 
               <button
                 type="button"

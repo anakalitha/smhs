@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import DataTable, { Column } from "@/components/ui/DataTable";
 import VisitConsultationChargeModal from "@/components/billing/VisitConsultationChargeModal";
+import ConsultationClient from "../../doctor/visits/[visitId]/consultation/ConsultationClient";
 
 type VisitStatus = "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
 type PayStatus = "ACCEPTED" | "PENDING" | "WAIVED";
@@ -253,6 +254,23 @@ export default function PatientSummaryClient({
   const [patient, setPatient] = useState<Patient | null>(null);
   const [visits, setVisits] = useState<VisitRow[]>([]);
   const [myRoles, setMyRoles] = useState<string[]>([]);
+
+  // For Doctor workflow: edit today's visit if present, otherwise the most recent visit.
+  // NOTE: Hooks must be declared before any early returns.
+  const activeVisitId = useMemo(() => {
+    if (!visits.length) return null;
+
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const today = `${yyyy}-${mm}-${dd}`;
+
+    const todayVisit = visits.find(
+      (vv) => String(vv.visitDate).slice(0, 10) === today
+    );
+    return todayVisit?.visitId ?? visits[0]?.visitId ?? null;
+  }, [visits]);
 
   function closeChargeModal() {
     setChargeModalOpen(false);
@@ -511,224 +529,215 @@ export default function PatientSummaryClient({
   return (
     <div className="min-h-[calc(100vh-120px)] bg-[#F2F2F2]">
       <div className="p-6 max-w-7xl mx-auto space-y-5">
-        {/* ===== Patient Summary Header Card (matches screenshot) ===== */}
-        <div className="rounded-2xl border bg-white shadow-sm p-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="text-sm font-semibold text-[#1f1f1f]">
-                Patient Summary
+        {/* Header row */}
+        <div className="flex items-center justify-between gap-4">
+          <div className="text-base font-semibold text-[#1f1f1f]">
+            Patient Summary
+          </div>
+          <button
+            type="button"
+            onClick={() => router.back()}
+            className="rounded-lg border bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50"
+          >
+            ← Back
+          </button>
+        </div>
+
+        {/* Top section: Patient card (left) + Visits card (right) */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          <div className="lg:col-span-4">
+            {" "}
+            {/* Left = 4/12 (33%) */}
+            {/* ===== Patient Card (left) ===== */}
+            <div className="rounded-2xl border bg-white shadow-sm p-5 lg:h-[360px] overflow-hidden">
+              <div className="h-full overflow-auto pr-1">
+                <div className="flex items-start gap-5">
+                  <div className="shrink-0">
+                    <div className="h-28 w-28 rounded-full border bg-white overflow-hidden">
+                      <Image
+                        src="/images/patient-avatar.png"
+                        alt="Patient"
+                        className="h-full w-full object-cover"
+                        width={112}
+                        height={112}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs text-[#646179]">Full Name</div>
+                    <div className="text-base font-semibold text-[#1f1f1f] truncate">
+                      {patient.name}
+                    </div>
+
+                    <div className="mt-2 text-xs text-[#646179]">
+                      Patient ID
+                    </div>
+                    <div className="text-sm font-semibold text-[#1f1f1f] break-all">
+                      {patient.patientCode}
+                    </div>
+
+                    <div className="mt-2 text-xs text-[#646179]">
+                      Phone Number
+                    </div>
+                    <div className="text-sm font-semibold text-[#1f1f1f]">
+                      {patient.phone ?? "—"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <InfoItem label="Last Visit" value={lastVisit} />
+                  <InfoItem
+                    label="Total Visits (Count)"
+                    value={String(totalVisits)}
+                  />
+                  <InfoItem
+                    label="Total Visits (Amount)"
+                    value={formatINR(patient.totalPaidAllTime ?? totalRevenue)}
+                  />
+                  <InfoItem
+                    label="Pending Dues"
+                    value={formatINR(patient.pending)}
+                  />
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <InfoItem label="Gender" value={gender} />
+                  <InfoItem label="Age" value={age} />
+                  <InfoItem label="Date of Birth" value={dob} />
+                  <InfoItem label="Address" value={address} />
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <InfoItem label="Email" value={email} />
+                  <InfoItem label="Blood Group" value={bloodGroup} />
+                </div>
               </div>
             </div>
-
-            <button
-              type="button"
-              onClick={() => router.back()}
-              className="rounded-lg border bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50"
-            >
-              ← Back
-            </button>
           </div>
 
-          <div className="mt-4 grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Left: Avatar + Name + Patient ID + Blood group */}
-            <div className="lg:col-span-3 flex flex-col items-center lg:items-start">
-              <div className="h-40 w-40 rounded-full border bg-white overflow-hidden">
-                <Image
-                  src="/images/patient-avatar.png"
-                  alt="Patient"
-                  className="h-full w-full object-cover"
-                  width={154}
-                  height={154}
+          <div className="lg:col-span-8 min-w-0">
+            {" "}
+            {/* Right = 8/12 (67%) */}
+            {/* ===== Visits Card (right) ===== */}
+            <div className="rounded-2xl border bg-white shadow-sm lg:h-[360px] overflow-hidden flex flex-col">
+              <div className="border-b px-4 py-3 flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-[#1f1f1f]">
+                    Visits
+                  </div>
+                  <div className="text-xs text-[#646179] mt-0.5">
+                    {canBillingActions
+                      ? "Edit Consultation charge to correct historical data (discount/waiver)."
+                      : "Recent visits."}
+                  </div>
+                </div>
+              </div>
+
+              {/* Scrollable table area */}
+              <div className="p-4 flex-1 overflow-auto">
+                <DataTable
+                  dense
+                  columns={visitColumns}
+                  rows={visits}
+                  getRowKey={(r) => r.visitId}
+                  groupedActions={(row) => {
+                    const actions: {
+                      label: string;
+                      onClick: () => void;
+                    }[] = [];
+
+                    // ✅ Always available (Doctor + Reception): open visit summary
+                    actions.push({
+                      label: "View Visit Summary",
+                      onClick: () =>
+                        window.open(
+                          `/visits/${row.visitId}`,
+                          "_blank",
+                          "noopener,noreferrer"
+                        ),
+                    });
+
+                    // Billing-only actions
+                    if (canBillingActions) {
+                      actions.push({
+                        label: "Edit Visit Data",
+                        onClick: () => {
+                          setChargeVisitId(row.visitId);
+                          setChargeModalOpen(true);
+                        },
+                      });
+
+                      actions.push({
+                        label: "Generate Bill",
+                        onClick: () =>
+                          window.open(
+                            `/reception/bill/${row.visitId}`,
+                            "_blank",
+                            "noopener,noreferrer"
+                          ),
+                      });
+
+                      if ((row.refundDue || 0) > 0) {
+                        actions.push({
+                          label: `Pay Refund (${formatINR(row.refundDue)})`,
+                          onClick: () => {
+                            setRefundVisit(row);
+                            setRefundOpen(true);
+                          },
+                        });
+                      }
+
+                      if (row.refundPaymentId) {
+                        actions.push({
+                          label: "Print Voucher",
+                          onClick: () =>
+                            window.open(
+                              `/reception/refund-voucher/${row.refundPaymentId}`,
+                              "_blank",
+                              "noopener,noreferrer"
+                            ),
+                        });
+
+                        actions.push({
+                          label: row.voucherFileUrl
+                            ? "Upload Voucher (Replace)"
+                            : "Upload Voucher",
+                          onClick: () => {
+                            setUploadPaymentId(row.refundPaymentId);
+                            setUploadOpen(true);
+                          },
+                        });
+                      }
+                    }
+
+                    return actions.length ? [{ items: actions }] : [];
+                  }}
+                  emptyText="No visits found."
                 />
               </div>
+            </div>
+          </div>
+        </div>
 
-              <div className="mt-3 text-sm text-[#646179]">Full Name</div>
-              <div className="text-lg font-semibold text-[#1f1f1f]">
-                {patient.name}
-              </div>
-
-              <div className="mt-2 text-sm text-[#646179]">Patient ID</div>
+        {/* Consultation entry (Doctor only) */}
+        {isDoctor && activeVisitId ? (
+          <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+            <div className="border-b px-5 py-4">
               <div className="text-sm font-semibold text-[#1f1f1f]">
-                {patient.patientCode}
+                Visit Details
               </div>
-
-              <div className="mt-4 w-full">
-                <div className="text-sm text-[#646179]">Blood Group</div>
-                <div className="text-sm font-semibold text-[#1f1f1f]">
-                  {bloodGroup}
-                </div>
-              </div>
-            </div>
-
-            {/* Middle: demographics grid */}
-            <div className="lg:col-span-6">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <InfoItem label="Gender" value={gender} />
-                <InfoItem label="Phone Number" value={patient.phone ?? "—"} />
-
-                <InfoItem label="Age" value={age} />
-                <InfoItem label="Email" value={email} />
-
-                <InfoItem label="Date of Birth" value={dob} />
-                <InfoItem label="Address" value={address} />
-              </div>
-            </div>
-
-            {/* Right: referral + stats */}
-            <div className="lg:col-span-3">
-              <div className="space-y-3">
-                <div>
-                  <div className="text-sm text-[#646179]">Last Visit</div>
-                  <div className="text-sm font-semibold text-[#1f1f1f]">
-                    {lastVisit}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-sm text-[#646179]">
-                    Total Visits (Count)
-                  </div>
-                  <div className="text-sm font-semibold text-[#1f1f1f]">
-                    {patient.totalVisits}
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t">
-                  <div className="text-sm text-[#646179]">
-                    Total Visits (Amount)
-                  </div>
-                  <div className="mt-1 flex items-center gap-2">
-                    {formatINR(patient.totalPaidAllTime ?? 0)}
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t">
-                  <div className="text-sm text-[#646179]">Pending Dues</div>
-                  <div className="text-lg font-semibold text-[#1f1f1f]">
-                    {formatINR(patient.pending)}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ===== Visits Card (matches screenshot) ===== */}
-        <div className="rounded-2xl border bg-white shadow-sm">
-          <div className="border-b px-4 py-3 flex items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-[#1f1f1f]">Visits</div>
               <div className="text-xs text-[#646179] mt-0.5">
-                {canBillingActions
-                  ? "Edit Consultation charge to correct historical data (discount/waiver)."
-                  : "Recent visits."}
+                Enter diagnosis, investigations, treatment, orders and
+                prescription for the current visit.
               </div>
             </div>
-
-            {isDoctor ? (
-              <button
-                type="button"
-                className="rounded-lg border bg-gray-50 px-4 py-2 text-sm font-medium hover:bg-gray-100"
-                onClick={() => {
-                  // Pick visitId:
-                  // 1) today's visit if present, else 2) most recent visit row
-                  const d = new Date();
-                  const yyyy = d.getFullYear();
-                  const mm = String(d.getMonth() + 1).padStart(2, "0");
-                  const dd = String(d.getDate()).padStart(2, "0");
-                  const today = `${yyyy}-${mm}-${dd}`;
-
-                  const todayVisit = visits.find(
-                    (vv) => String(vv.visitDate).slice(0, 10) === today
-                  );
-                  const recentVisit = visits[0];
-
-                  const vid = todayVisit?.visitId ?? recentVisit?.visitId;
-
-                  if (!vid) {
-                    alert("No visit found for this patient.");
-                    return;
-                  }
-
-                  router.push(`/doctor/visits/${vid}/consultation`);
-                }}
-              >
-                New Visit Details
-              </button>
-            ) : null}
+            <div className="p-4">
+              <ConsultationClient visitId={activeVisitId} embedded />
+            </div>
           </div>
-
-          <div className="p-4">
-            <DataTable
-              dense
-              columns={visitColumns}
-              rows={visits}
-              getRowKey={(r) => r.visitId}
-              groupedActions={(row) => {
-                if (!canBillingActions) return [];
-                const actions: { label: string; onClick: () => void }[] = [];
-
-                actions.push({
-                  label: "View Visit Summary",
-                  onClick: () => router.push(`/visits/${row.visitId}`),
-                });
-
-                actions.push({
-                  label: "Edit Visit Data",
-                  onClick: () => {
-                    setChargeVisitId(row.visitId);
-                    setChargeModalOpen(true);
-                  },
-                });
-
-                actions.push({
-                  label: "Generate Bill",
-                  onClick: () =>
-                    window.open(
-                      `/reception/bill/${row.visitId}`,
-                      "_blank",
-                      "noopener,noreferrer"
-                    ),
-                });
-
-                if ((row.refundDue || 0) > 0) {
-                  actions.push({
-                    label: `Pay Refund (${formatINR(row.refundDue)})`,
-                    onClick: () => {
-                      setRefundVisit(row);
-                      setRefundOpen(true);
-                    },
-                  });
-                }
-
-                if (row.refundPaymentId) {
-                  actions.push({
-                    label: "Print Voucher",
-                    onClick: () =>
-                      window.open(
-                        `/reception/refund-voucher/${row.refundPaymentId}`,
-                        "_blank",
-                        "noopener,noreferrer"
-                      ),
-                  });
-
-                  actions.push({
-                    label: row.voucherFileUrl
-                      ? "Upload Voucher (Replace)"
-                      : "Upload Voucher",
-                    onClick: () => {
-                      setUploadPaymentId(row.refundPaymentId);
-                      setUploadOpen(true);
-                    },
-                  });
-                }
-
-                return [{ items: actions }];
-              }}
-              emptyText="No visits found."
-            />
-          </div>
-        </div>
+        ) : null}
 
         {/* existing modals */}
         <VisitConsultationChargeModal
