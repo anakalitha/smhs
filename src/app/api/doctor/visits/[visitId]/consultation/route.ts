@@ -3,8 +3,11 @@ import { NextResponse } from "next/server";
 import type { RowDataPacket, ResultSetHeader } from "mysql2/promise";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
+import type { Pool, PoolConnection } from "mysql2/promise";
 
 type Ctx = { params: Promise<{ visitId: string }> };
+type ServiceRow = RowDataPacket & { id: number; code: string };
+type DbLike = Pool | PoolConnection;
 
 type VisitRow = RowDataPacket & {
   visitId: number;
@@ -142,8 +145,8 @@ type SavePayload = {
 
 type ServiceCode = "SCAN" | "PAP" | "CTG" | "LAB";
 
-async function getServiceIdMap(connOrDb: typeof db, args: { orgId: number }) {
-  const [rows] = await connOrDb.execute<RowDataPacket[]>(
+async function getServiceIdMap(connOrDb: DbLike, args: { orgId: number }) {
+  const [rows] = await connOrDb.execute<ServiceRow[]>(
     `
     SELECT id, code
     FROM services

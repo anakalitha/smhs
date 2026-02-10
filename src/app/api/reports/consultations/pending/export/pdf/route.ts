@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Buffer } from "buffer";
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
@@ -125,7 +126,7 @@ export async function GET(req: Request) {
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
     const page = pdfDoc.addPage([595.28, 841.89]); // A4
-    const { width, height } = page.getSize();
+    const { height } = page.getSize();
 
     let y = height - 40;
     page.drawText("Pending Consultation Fees", {
@@ -166,8 +167,9 @@ export async function GET(req: Request) {
     }
 
     const bytes = await pdfDoc.save();
+    const body = Buffer.from(bytes);
 
-    return new NextResponse(bytes, {
+    return new NextResponse(body, {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
