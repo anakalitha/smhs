@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Base surfaces */
+  --bg-app: #f2f2f2; /* overall app background */
+  --text-primary: #1f1f1f;
+  --text-muted: #646179;
+
+  /* Panels/cards */
+  --panel-bg: #ffffff;
+  --panel-border: #e5e7eb;
+
+  /* Form “eye-comfort” section (sage) */
+  --form-bg: #f0fbf7; /* light sage */
+  --form-border: #cfe7df;
+  --form-label: #2e2e2e; /* dark charcoal */
+  --input-bg: #ffffff;
+  --input-border: #cfe7df;
+  --input-text: #1f1f1f;
+  --input-placeholder: #9ca3af;
+
+  /* Focus / states */
+  --focus-ring: #3b82f6;
+  --danger: #c0392b;
+
+  /* Table */
+  --table-head-bg: #f9fafb;
+  --table-row-hover: rgba(0, 0, 0, 0.03);
+}
+
+/* Dark theme (we’ll enable later via data-theme="dark") */
+[data-theme="dark"] {
+  --bg-app: #0b1220;
+  --text-primary: #e5e7eb;
+  --text-muted: #9ca3af;
+
+  --panel-bg: #0f172a;
+  --panel-border: #1f2937;
+
+  /* Keep forms calm, not neon */
+  --form-bg: #0b1a16; /* dark sage/green */
+  --form-border: #1b3a32;
+  --form-label: #e5e7eb;
+  --input-bg: #0f172a;
+  --input-border: #1f2937;
+  --input-text: #e5e7eb;
+  --input-placeholder: #6b7280;
+
+  --focus-ring: #60a5fa;
+  --danger: #ef4444;
+
+  --table-head-bg: #111827;
+  --table-row-hover: rgba(255, 255, 255, 0.04);
+}
