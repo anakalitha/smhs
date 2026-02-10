@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+// src/app/api/scan/orders/[orderId]/route.ts
+import { NextResponse, type NextRequest } from "next/server";
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
@@ -33,9 +34,11 @@ type Row = RowDataPacket & {
 };
 
 export async function GET(
-  req: Request,
-  { params }: { params: { orderId: string } }
+  req: NextRequest,
+  context: { params: Promise<{ orderId: string }> }
 ) {
+  const { orderId: orderIdParam } = await context.params;
+
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -49,7 +52,7 @@ export async function GET(
   if (!me.organizationId || !me.branchId)
     return NextResponse.json({ error: "Invalid org/branch." }, { status: 400 });
 
-  const orderId = Number(params.orderId);
+  const orderId = Number(orderIdParam);
   if (!Number.isFinite(orderId) || orderId <= 0)
     return NextResponse.json({ error: "Invalid orderId" }, { status: 400 });
 
@@ -115,11 +118,7 @@ export async function GET(
   const r = rows[0];
 
   return NextResponse.json({
-    order: {
-      orderId: r.orderId,
-      status: r.status,
-      notes: r.notes,
-    },
+    order: { orderId: r.orderId, status: r.status, notes: r.notes },
     visit: {
       visitId: r.visitId,
       visitDate: r.visitDate,
@@ -130,9 +129,7 @@ export async function GET(
       name: r.patientName,
       phone: r.phone ?? "—",
     },
-    defaults: {
-      scanFee: Number(r.defaultFee ?? 0),
-    },
+    defaults: { scanFee: Number(r.defaultFee ?? 0) },
     existing: {
       chargeId: r.chargeId,
       baseAmount: Number(r.baseAmount ?? 0),
