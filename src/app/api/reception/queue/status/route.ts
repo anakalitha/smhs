@@ -4,10 +4,12 @@ import type { RowDataPacket, ResultSetHeader } from "mysql2/promise";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
 
-type QueueStatus = "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
+type QueueStatus = "WAITING" | "NEXT" | "IN_ROOM" | "COMPLETED";
 
 function isQueueStatus(s: string): s is QueueStatus {
-  return s === "WAITING" || s === "NEXT" || s === "IN_ROOM" || s === "DONE";
+  return (
+    s === "WAITING" || s === "NEXT" || s === "IN_ROOM" || s === "COMPLETED"
+  );
 }
 
 export async function POST(req: Request) {

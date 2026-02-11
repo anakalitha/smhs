@@ -186,7 +186,7 @@ export default function ReceptionDashboard() {
                       {
                         label: "Mark as Done",
                         onClick: () =>
-                          changeQueueStatus(row.queueEntryId, "DONE"),
+                          changeQueueStatus(row.queueEntryId, "COMPLETED"),
                       },
                     ],
                   },

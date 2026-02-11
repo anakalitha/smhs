@@ -7,8 +7,21 @@ import Image from "next/image";
 import DataTable, { Column } from "@/components/ui/DataTable";
 import VisitConsultationChargeModal from "@/components/billing/VisitConsultationChargeModal";
 import ConsultationClient from "../../doctor/visits/[visitId]/consultation/ConsultationClient";
+import { LucideIcon } from "lucide-react";
+import {
+  Calendar,
+  Mail,
+  MapPin,
+  User,
+  Droplets,
+  Repeat,
+  IndianRupee,
+  AlertCircle,
+  Clock,
+  Cake,
+} from "lucide-react";
 
-type VisitStatus = "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
+type VisitStatus = "WAITING" | "NEXT" | "IN_ROOM" | "COMPLETED";
 type PayStatus = "ACCEPTED" | "PENDING" | "WAIVED";
 
 type Patient = {
@@ -229,7 +242,7 @@ async function safeJson(res: Response) {
  * Patient Summary (Option A):
  * - Uses /api/patients/[patientCode]/summary (shared route)
  * - For each visit, reads consultation charge + refund state from:
- *   /api/reception/visits/[visitId]/consultation-charge
+ *   /api/visits/[visitId]/consultation-charge
  */
 export default function PatientSummaryClient({
   patientCode,
@@ -271,6 +284,12 @@ export default function PatientSummaryClient({
     );
     return todayVisit?.visitId ?? visits[0]?.visitId ?? null;
   }, [visits]);
+
+  // Show historical visits only in the Visits table (exclude the active/current visit)
+  const historicalVisits = useMemo(() => {
+    if (!activeVisitId) return visits;
+    return visits.filter((v) => v.visitId !== activeVisitId);
+  }, [visits, activeVisitId]);
 
   function closeChargeModal() {
     setChargeModalOpen(false);
@@ -332,7 +351,7 @@ export default function PatientSummaryClient({
           if (canFetchBilling) {
             try {
               const cRes = await fetch(
-                `/api/reception/visits/${visitId}/consultation-charge`,
+                `/api/visits/${visitId}/consultation-charge`,
                 { cache: "no-store" }
               );
               const cJson = (await safeJson(cRes)) as unknown;
@@ -587,31 +606,42 @@ export default function PatientSummaryClient({
                 </div>
 
                 <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <InfoItem label="Last Visit" value={lastVisit} />
+                  <InfoItem
+                    label="Last Visit"
+                    value={lastVisit}
+                    icon={Calendar}
+                  />
                   <InfoItem
                     label="Total Visits (Count)"
                     value={String(totalVisits)}
+                    icon={Repeat}
                   />
                   <InfoItem
                     label="Total Visits (Amount)"
                     value={formatINR(patient.totalPaidAllTime ?? totalRevenue)}
+                    icon={IndianRupee}
                   />
                   <InfoItem
                     label="Pending Dues"
                     value={formatINR(patient.pending)}
+                    icon={AlertCircle}
                   />
                 </div>
 
                 <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <InfoItem label="Gender" value={gender} />
-                  <InfoItem label="Age" value={age} />
-                  <InfoItem label="Date of Birth" value={dob} />
-                  <InfoItem label="Address" value={address} />
+                  <InfoItem label="Gender" value={gender} icon={User} />
+                  <InfoItem label="Age" value={age} icon={Clock} />
+                  <InfoItem label="Date of Birth" value={dob} icon={Cake} />
+                  <InfoItem label="Address" value={address} icon={MapPin} />
                 </div>
 
                 <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <InfoItem label="Email" value={email} />
-                  <InfoItem label="Blood Group" value={bloodGroup} />
+                  <InfoItem label="Email" value={email} icon={Mail} />
+                  <InfoItem
+                    label="Blood Group"
+                    value={bloodGroup}
+                    icon={Droplets}
+                  />
                 </div>
               </div>
             </div>
@@ -640,7 +670,7 @@ export default function PatientSummaryClient({
                 <DataTable
                   dense
                   columns={visitColumns}
-                  rows={visits}
+                  rows={historicalVisits}
                   getRowKey={(r) => r.visitId}
                   groupedActions={(row) => {
                     const actions: {
@@ -775,15 +805,24 @@ export default function PatientSummaryClient({
 }
 
 /** Small helper to mimic the icon+label rows in screenshot (no icon dependency). */
-function InfoItem({ label, value }: { label: string; value: string }) {
+function InfoItem({
+  label,
+  value,
+  icon: Icon,
+}: {
+  label: string;
+  value: string;
+  icon?: LucideIcon;
+}) {
   return (
     <div className="flex items-start gap-3">
-      <div className="mt-0.5 h-8 w-8 rounded-lg border bg-white flex items-center justify-center text-xs text-[#646179]">
-        {/* icon placeholder */}i
+      <div className="mt-0.5 h-8 w-8 rounded-lg border bg-white flex items-center justify-center text-[#646179]">
+        {Icon ? <Icon className="h-4 w-4" /> : null}
       </div>
-      <div>
+
+      <div className="min-w-0">
         <div className="text-xs text-[#646179]">{label}</div>
-        <div className="text-sm font-semibold text-[#1f1f1f]">
+        <div className="text-sm font-semibold text-[#1f1f1f] truncate">
           {value || "—"}
         </div>
       </div>

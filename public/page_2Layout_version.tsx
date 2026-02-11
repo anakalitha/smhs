@@ -8,7 +8,7 @@ import DataTable, { Column } from "@/components/ui/DataTable";
 import ReferralComboBox from "@/components/ui/ReferralComboBox";
 import AddDoctorModal from "@/components/ui/AddDoctorModal";
 
-type QueueStatus = "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
+type QueueStatus = "WAITING" | "NEXT" | "IN_ROOM" | "COMPLETED";
 type PayStatus = "ACCEPTED" | "PENDING" | "WAIVED";
 
 type PaymentModeRow = { code: string; display_name: string };
@@ -700,9 +700,9 @@ export default function ReceptionDashboard() {
                           changeQueueStatus(row.queueEntryId, "IN_ROOM"),
                       },
                       {
-                        label: "Mark as Done",
+                        label: "Mark as Complete",
                         onClick: () =>
-                          changeQueueStatus(row.queueEntryId, "DONE"),
+                          changeQueueStatus(row.queueEntryId, "COMPLETED"),
                       },
                     ],
                   },

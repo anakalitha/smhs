@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import DataTable, { Column } from "@/components/ui/DataTable";
 
-type QueueStatus = "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
+type QueueStatus = "WAITING" | "NEXT" | "IN_ROOM" | "COMPLETED";
 
 type Gender = "MALE" | "FEMALE" | "OTHER";
 type BloodGroup = "A+" | "A-" | "B+" | "B-" | "AB+" | "AB-" | "O+" | "O-";
@@ -321,7 +321,7 @@ export default function PatientSummaryV2Client({
           const st = r.queueStatus;
           if (!st) return <span className="text-slate-500">—</span>;
           const tone =
-            st === "DONE"
+            st === "COMPLETED"
               ? "green"
               : st === "IN_ROOM"
               ? "blue"
@@ -612,7 +612,7 @@ export default function PatientSummaryV2Client({
                     today.queueStatus ? (
                       <Badge
                         tone={
-                          today.queueStatus === "DONE"
+                          today.queueStatus === "COMPLETED"
                             ? "green"
                             : today.queueStatus === "IN_ROOM"
                             ? "blue"

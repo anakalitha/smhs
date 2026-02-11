@@ -7,7 +7,7 @@ import { getCurrentUser } from "@/lib/session";
 type DoctorQueueRow = RowDataPacket & {
   visitId: number;
   visitDate: string;
-  status: "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
+  status: "WAITING" | "NEXT" | "IN_ROOM" | "COMPLETED";
   tokenNo: number | null;
 
   patientDbId: number;
@@ -156,6 +156,8 @@ export async function GET(req: Request) {
       ${whereDoctor}
       ${whereSearch}
       AND v.visit_date = CURDATE()
+      AND v.status <> 'COMPLETED'
+      AND COALESCE(q.status, 'WAITING') IN ('WAITING','NEXT','IN_ROOM')
     ORDER BY
       CASE WHEN q.token_no IS NULL THEN 1 ELSE 0 END ASC,
       q.token_no ASC,

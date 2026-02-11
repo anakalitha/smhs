@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-export type QueueStatus = "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
+export type QueueStatus = "WAITING" | "NEXT" | "IN_ROOM" | "COMPLETED";
 
 export type DoctorQueueRow = {
   visitId: number;

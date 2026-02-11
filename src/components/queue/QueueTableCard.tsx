@@ -4,7 +4,7 @@
 import React from "react";
 import DataTable, { Column } from "@/components/ui/DataTable";
 
-export type QueueStatus = "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
+export type QueueStatus = "WAITING" | "NEXT" | "IN_ROOM" | "COMPLETED";
 
 export type BaseQueueRow = {
   queueEntryId: number;

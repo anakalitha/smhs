@@ -166,12 +166,6 @@ async function getServiceIdMap(connOrDb: DbLike, args: { orgId: number }) {
   return map;
 }
 
-function codeToOrderType(code: string): "SCAN" | "PAP_SMEAR" | "CTG" | "LAB" {
-  if (code === "PAP") return "PAP_SMEAR";
-  if (code === "SCAN" || code === "CTG" || code === "LAB") return code;
-  return code as any;
-}
-
 function toNullableInt(v: number | "" | null | undefined): number | null {
   if (v === "" || v == null) return null;
   const n = Number(v);
@@ -525,6 +519,7 @@ export async function POST(req: Request, ctx: Ctx) {
     );
 
     const items = body.prescription?.items ?? [];
+    let insertedRxItems = 0;
     for (const it of items) {
       const med = String(it.medicineName ?? "").trim();
       if (!med) continue;
@@ -549,8 +544,56 @@ export async function POST(req: Request, ctx: Ctx) {
           sort: Number.isFinite(it.sortOrder) ? it.sortOrder : 0,
         }
       );
+      insertedRxItems += 1;
     }
 
+    // 5) Upsert pharma_orders (for Pharmacy dashboard + reports)
+    // Create/update PENDING order if prescription has at least one item.
+    if (insertedRxItems > 0) {
+      const [poRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT id, status FROM pharma_orders WHERE visit_id = :visitId LIMIT 1`,
+        { visitId: id }
+      );
+
+      if (poRows.length === 0) {
+        await conn.execute(
+          `
+          INSERT INTO pharma_orders (visit_id, prescription_id, status, updated_by, updated_at)
+          VALUES (:visitId, :rxId, 'PENDING', :by, NOW())
+          `,
+          { visitId: id, rxId, by: me.id }
+        );
+      } else {
+        const poId = Number(poRows[0].id);
+        const existingStatus = String(
+          poRows[0].status || "PENDING"
+        ).toUpperCase();
+
+        // Do not override PURCHASED / NOT_PURCHASED if pharmacy already acted
+        const nextStatus =
+          existingStatus === "PURCHASED" || existingStatus === "NOT_PURCHASED"
+            ? existingStatus
+            : "PENDING";
+
+        await conn.execute(
+          `
+          UPDATE pharma_orders
+          SET prescription_id = :rxId,
+              status = :status,
+              updated_by = :by,
+              updated_at = NOW()
+          WHERE id = :id
+          `,
+          { rxId, status: nextStatus, by: me.id, id: poId }
+        );
+      }
+    } else {
+      // If doctor removed all prescription items and pharmacy hasn't processed it yet, remove pending record.
+      await conn.execute(
+        `DELETE FROM pharma_orders WHERE visit_id = :visitId AND status = 'PENDING'`,
+        { visitId: id }
+      );
+    }
     await conn.commit();
     return NextResponse.json({ ok: true });
   } catch (e) {

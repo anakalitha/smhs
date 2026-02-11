@@ -3,11 +3,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Trash2, Plus } from "lucide-react";
+import MedicineComboBox from "@/components/ui/MedicineComboBox";
 
 type OrderType = "SCAN" | "PAP_SMEAR" | "CTG" | "LAB";
 
 type LoadedData = {
   ok: true;
+  admitRequested?: boolean;
   visit: {
     visitId: number;
     visitDate: string;
@@ -42,14 +45,21 @@ type LoadedData = {
   }>;
 };
 
+// New UI model (kept compatible with existing DB schema)
 type RxItem = {
   medicineName: string;
-  dosage: string;
-  morning: boolean;
-  afternoon: boolean;
-  night: boolean;
+
+  // numeric doses per time
+  morningDose: string; // number string
+  afternoonDose: string;
+  nightDose: string;
+
   beforeFood: boolean;
   durationDays: string;
+
+  periodicity: string; // e.g. Daily / Alternate days / etc.
+  startDate: string; // yyyy-mm-dd
+
   instructions: string;
   sortOrder: number;
 };
@@ -61,8 +71,12 @@ function inputCls() {
   );
 }
 
-function textAreaCls() {
-  return inputCls() + " min-h-[90px]";
+function textAreaClsSmall() {
+  return inputCls() + " min-h-[90px] resize-y";
+}
+
+function textAreaClsMedium() {
+  return inputCls() + " min-h-[90px] resize-y";
 }
 
 function Toggle({
@@ -84,6 +98,91 @@ function Toggle({
       <span className="font-medium">{label}</span>
     </label>
   );
+}
+
+// ===== Helpers for backward-compatible storage =====
+
+// dosage stored as "M-A-N" (e.g. "1-0-1")
+function parseDosageToDoses(
+  dosage: string | null,
+  fallback: { m: boolean; a: boolean; n: boolean }
+) {
+  const raw = (dosage || "").trim();
+
+  if (raw.includes("-")) {
+    const parts = raw.split("-").map((x) => x.trim());
+    const m = (parts[0] || "").replace(/[^0-9]/g, "");
+    const a = (parts[1] || "").replace(/[^0-9]/g, "");
+    const n = (parts[2] || "").replace(/[^0-9]/g, "");
+    return {
+      m: m,
+      a: a,
+      n: n,
+    };
+  }
+
+  // If no structured dosage is present, use booleans as 1/blank
+  return {
+    m: fallback.m ? "1" : "",
+    a: fallback.a ? "1" : "",
+    n: fallback.n ? "1" : "",
+  };
+}
+
+// instructions stored with meta header: [P=...][S=yyyy-mm-dd] actual text...
+function parseInstructionsMeta(instructions: string | null) {
+  const raw = (instructions || "").trim();
+  const metaMatch = raw.match(/^\[P=(.*?)\]\[S=(.*?)\]\s*/);
+
+  if (!metaMatch) {
+    return {
+      periodicity: "Daily",
+      startDate: "",
+      instructions: raw,
+    };
+  }
+
+  const periodicity = (metaMatch[1] || "").trim() || "Daily";
+  const startDate = (metaMatch[2] || "").trim() || "";
+  const rest = raw.replace(/^\[P=(.*?)\]\[S=(.*?)\]\s*/, "");
+
+  return {
+    periodicity,
+    startDate,
+    instructions: rest,
+  };
+}
+
+function buildInstructionsWithMeta(meta: {
+  periodicity: string;
+  startDate: string;
+  instructions: string;
+}) {
+  const p = (meta.periodicity || "Daily").trim();
+  const s = (meta.startDate || "").trim();
+  const body = (meta.instructions || "").trim();
+
+  // Keep meta even if empty startDate; helps future parsing consistency
+  return `[P=${p}][S=${s}] ${body}`.trim();
+}
+
+function toNumStr(v: string) {
+  return (v || "").replace(/[^0-9]/g, "");
+}
+
+function blankRxItem(sortOrder: number): RxItem {
+  return {
+    medicineName: "",
+    morningDose: "",
+    afternoonDose: "",
+    nightDose: "",
+    beforeFood: false,
+    durationDays: "",
+    periodicity: "Daily",
+    startDate: "",
+    instructions: "",
+    sortOrder,
+  };
 }
 
 export default function ConsultationClient({
@@ -119,22 +218,11 @@ export default function ConsultationClient({
   const [labNeeded, setLabNeeded] = useState(false);
   const [labDetails, setLabDetails] = useState("");
 
+  // Prescription notes now shown in the top 5-field row
   const [rxNotes, setRxNotes] = useState("");
-  const [rxItems, setRxItems] = useState<RxItem[]>([]);
 
-  function blankRxItem(sortOrder: number): RxItem {
-    return {
-      medicineName: "",
-      dosage: "",
-      morning: true,
-      afternoon: false,
-      night: true,
-      beforeFood: false,
-      durationDays: "",
-      instructions: "",
-      sortOrder,
-    };
-  }
+  const [rxItems, setRxItems] = useState<RxItem[]>([]);
+  const [admit, setAdmit] = useState(false);
 
   function hydrate(data: LoadedData) {
     setVisit({
@@ -149,6 +237,9 @@ export default function ConsultationClient({
     setTreatment(data.note?.treatment ?? "");
     setRemarks(data.note?.remarks ?? "");
 
+    // Optional (only present after DB migration + API update)
+    setAdmit(!!data.admitRequested);
+
     const oScan = data.orders.find(
       (o) => o.orderType === "SCAN" && o.status !== "CANCELLED"
     );
@@ -158,7 +249,6 @@ export default function ConsultationClient({
     const oCtg = data.orders.find(
       (o) => o.orderType === "CTG" && o.status !== "CANCELLED"
     );
-
     const oLab = data.orders.find(
       (o) => o.orderType === "LAB" && o.status !== "CANCELLED"
     );
@@ -169,25 +259,42 @@ export default function ConsultationClient({
     setPapDetails(oPap?.details ?? "");
     setCtgNeeded(!!oCtg);
     setCtgDetails(oCtg?.details ?? "");
-
     setLabNeeded(!!oLab);
     setLabDetails(oLab?.details ?? "");
 
     setRxNotes(data.prescription?.notes ?? "");
 
-    const mapped = (data.prescriptionItems || []).map((i) => ({
-      medicineName: i.medicineName,
-      dosage: i.dosage ?? "",
-      morning: !!i.morning,
-      afternoon: !!i.afternoon,
-      night: !!i.night,
-      beforeFood: !!i.beforeFood,
-      durationDays: i.durationDays != null ? String(i.durationDays) : "",
-      instructions: i.instructions ?? "",
-      sortOrder: Number(i.sortOrder ?? 0),
-    }));
+    const mapped: RxItem[] = (data.prescriptionItems || []).map((i) => {
+      const doses = parseDosageToDoses(i.dosage, {
+        m: !!i.morning,
+        a: !!i.afternoon,
+        n: !!i.night,
+      });
 
-    setRxItems(mapped.length ? mapped : [blankRxItem(0)]);
+      const meta = parseInstructionsMeta(i.instructions);
+
+      return {
+        medicineName: i.medicineName,
+        morningDose: doses.m,
+        afternoonDose: doses.a,
+        nightDose: doses.n,
+        beforeFood: !!i.beforeFood,
+        durationDays: i.durationDays != null ? String(i.durationDays) : "",
+        periodicity: meta.periodicity || "Daily",
+        startDate: meta.startDate || "",
+        instructions: meta.instructions || "",
+        sortOrder: Number(i.sortOrder ?? 0),
+      };
+    });
+
+    // Default 2 rows
+    if (mapped.length === 0) {
+      setRxItems([blankRxItem(0), blankRxItem(1)]);
+    } else if (mapped.length === 1) {
+      setRxItems([mapped[0], blankRxItem(1)]);
+    } else {
+      setRxItems(mapped);
+    }
   }
 
   async function load() {
@@ -236,6 +343,7 @@ export default function ConsultationClient({
       investigation,
       treatment,
       remarks,
+      admit,
       orders: {
         scan: { needed: scanNeeded, details: scanDetails },
         pap: { needed: papNeeded, details: papDetails },
@@ -244,17 +352,38 @@ export default function ConsultationClient({
       },
       prescription: {
         notes: rxNotes,
-        items: rxItems.map((it, idx) => ({
-          medicineName: it.medicineName,
-          dosage: it.dosage || undefined,
-          morning: it.morning,
-          afternoon: it.afternoon,
-          night: it.night,
-          beforeFood: it.beforeFood,
-          durationDays: it.durationDays ? Number(it.durationDays) : null,
-          instructions: it.instructions || undefined,
-          sortOrder: Number.isFinite(it.sortOrder) ? it.sortOrder : idx,
-        })),
+        items: rxItems.map((it, idx) => {
+          const m = toNumStr(it.morningDose);
+          const a = toNumStr(it.afternoonDose);
+          const n = toNumStr(it.nightDose);
+
+          // Store numeric doses compactly in dosage as M-A-N (varchar100)
+          const dosage = [m, a, n].join("-"); // e.g. "1-0-1"
+
+          // Store periodicity/startDate inside instructions meta header (varchar255)
+          const instructions = buildInstructionsWithMeta({
+            periodicity: (it.periodicity || "Daily").trim(),
+            startDate: (it.startDate || "").trim(),
+            instructions: (it.instructions || "").trim(),
+          });
+
+          return {
+            medicineName: it.medicineName,
+            dosage: dosage.replace(/^-+|-+$/g, "") || undefined,
+
+            // keep your existing booleans (derived from dose > 0)
+            morning: Number(m || "0") > 0,
+            afternoon: Number(a || "0") > 0,
+            night: Number(n || "0") > 0,
+
+            beforeFood: it.beforeFood,
+            durationDays: it.durationDays
+              ? Number(toNumStr(it.durationDays))
+              : null,
+            instructions: instructions || undefined,
+            sortOrder: Number.isFinite(it.sortOrder) ? it.sortOrder : idx,
+          };
+        }),
       },
     };
   }, [
@@ -262,6 +391,7 @@ export default function ConsultationClient({
     investigation,
     treatment,
     remarks,
+    admit,
     scanNeeded,
     scanDetails,
     papNeeded,
@@ -288,7 +418,14 @@ export default function ConsultationClient({
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setErr(data?.error || "Save failed.");
+        const msg =
+          data &&
+          typeof data === "object" &&
+          "error" in data &&
+          typeof (data as Record<string, unknown>).error === "string"
+            ? String((data as Record<string, unknown>).error)
+            : "Save failed.";
+        setErr(msg);
         return false;
       }
 
@@ -310,13 +447,27 @@ export default function ConsultationClient({
         body: JSON.stringify({}),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.ok) {
-        setErr(data?.error || "Failed to mark visit as DONE.");
+      const ok =
+        data &&
+        typeof data === "object" &&
+        "ok" in data &&
+        (data as Record<string, unknown>).ok === true;
+
+      if (!res.ok || !ok) {
+        const msg =
+          data &&
+          typeof data === "object" &&
+          "error" in data &&
+          typeof (data as Record<string, unknown>).error === "string"
+            ? String((data as Record<string, unknown>).error)
+            : "Failed to mark visit as COMPLETED.";
+        setErr(msg);
         return false;
       }
+
       return true;
     } catch {
-      setErr("Network error while marking DONE.");
+      setErr("Network error while marking COMPLETED.");
       return false;
     }
   }
@@ -330,13 +481,11 @@ export default function ConsultationClient({
 
     const pdfUrl = `/api/doctor/visits/${visitId}/consultation/pdf`;
 
-    // Open PDF (single window) — no about:blank
-    // Must happen synchronously after user action; keep this function directly called by button onClick.
     window.open(pdfUrl, "_blank", "noopener,noreferrer");
 
-    // Navigate back to doctor dashboard + refresh (skip when embedded in Patient Summary)
     if (embedded) {
-      setOkMsg("Saved. Visit marked as DONE.");
+      setOkMsg("Saved. Visit marked as COMPLETED.");
+      router.push("/doctor");
       router.refresh();
       return;
     }
@@ -385,7 +534,7 @@ export default function ConsultationClient({
   return (
     <div className={embedded ? "" : "min-h-[calc(100vh-120px)] bg-[#F2F2F2]"}>
       <div
-        className={embedded ? "space-y-5" : "p-6 max-w-5xl mx-auto space-y-5"}
+        className={embedded ? "space-y-5" : "p-6 max-w-6xl mx-auto space-y-5"}
       >
         {/* Header */}
         <div className="rounded-2xl border bg-white shadow-sm p-5">
@@ -400,6 +549,7 @@ export default function ConsultationClient({
                 Visit Date: {visit?.visitDate}
               </div>
             </div>
+
             <div className="flex flex-wrap gap-2">
               {!embedded ? (
                 <>
@@ -439,7 +589,7 @@ export default function ConsultationClient({
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
                 disabled={saving}
                 onClick={saveFinishPrintAndExit}
-                title="Save consultation, mark DONE, open PDF, go back to dashboard"
+                title="Save consultation, mark COMPLETED, open PDF, go back to dashboard"
               >
                 {saving ? "Saving…" : "Save"}
               </button>
@@ -458,55 +608,67 @@ export default function ConsultationClient({
           )}
         </div>
 
-        {/* Diagnosis / Investigation */}
-        <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Row 1: 5 textareas in one row */}
+        <div className="rounded-2xl border bg-white shadow-sm p-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
             <div>
               <div className="text-sm font-medium text-slate-700 mb-2">
                 Diagnosis
               </div>
               <textarea
-                className={textAreaCls()}
+                className={textAreaClsSmall()}
                 value={diagnosis}
                 onChange={(e) => setDiagnosis(e.target.value)}
               />
             </div>
+
             <div>
               <div className="text-sm font-medium text-slate-700 mb-2">
                 Investigation
               </div>
               <textarea
-                className={textAreaCls()}
+                className={textAreaClsSmall()}
                 value={investigation}
                 onChange={(e) => setInvestigation(e.target.value)}
               />
             </div>
-          </div>
 
-          <div>
-            <div className="text-sm font-medium text-slate-700 mb-2">
-              Treatment
+            <div>
+              <div className="text-sm font-medium text-slate-700 mb-2">
+                Treatment
+              </div>
+              <textarea
+                className={textAreaClsSmall()}
+                value={treatment}
+                onChange={(e) => setTreatment(e.target.value)}
+              />
             </div>
-            <textarea
-              className={textAreaCls()}
-              value={treatment}
-              onChange={(e) => setTreatment(e.target.value)}
-            />
-          </div>
 
-          <div>
-            <div className="text-sm font-medium text-slate-700 mb-2">
-              Consultation Remarks
+            <div>
+              <div className="text-sm font-medium text-slate-700 mb-2">
+                Consultation Remarks
+              </div>
+              <textarea
+                className={textAreaClsSmall()}
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+              />
             </div>
-            <textarea
-              className={textAreaCls()}
-              value={remarks}
-              onChange={(e) => setRemarks(e.target.value)}
-            />
+
+            <div>
+              <div className="text-sm font-medium text-slate-700 mb-2">
+                Prescription Notes
+              </div>
+              <textarea
+                className={textAreaClsSmall()}
+                value={rxNotes}
+                onChange={(e) => setRxNotes(e.target.value)}
+              />
+            </div>
           </div>
         </div>
 
-        {/* Orders */}
+        {/* Orders (unchanged layout) */}
         <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-4">
           <div className="text-sm font-semibold text-slate-900">Orders</div>
 
@@ -518,7 +680,7 @@ export default function ConsultationClient({
                 onChange={setScanNeeded}
               />
               <textarea
-                className={textAreaCls()}
+                className={textAreaClsMedium()}
                 placeholder="Scan details (type, region, notes)"
                 value={scanDetails}
                 onChange={(e) => setScanDetails(e.target.value)}
@@ -533,7 +695,7 @@ export default function ConsultationClient({
                 onChange={setPapNeeded}
               />
               <textarea
-                className={textAreaCls()}
+                className={textAreaClsMedium()}
                 placeholder="PAP details"
                 value={papDetails}
                 onChange={(e) => setPapDetails(e.target.value)}
@@ -544,7 +706,7 @@ export default function ConsultationClient({
             <div className="rounded-xl border bg-slate-50 p-3">
               <Toggle label="CTG" checked={ctgNeeded} onChange={setCtgNeeded} />
               <textarea
-                className={textAreaCls()}
+                className={textAreaClsMedium()}
                 placeholder="CTG details"
                 value={ctgDetails}
                 onChange={(e) => setCtgDetails(e.target.value)}
@@ -559,7 +721,7 @@ export default function ConsultationClient({
                 onChange={setLabNeeded}
               />
               <textarea
-                className={textAreaCls()}
+                className={textAreaClsMedium()}
                 placeholder="Lab test details"
                 value={labDetails}
                 onChange={(e) => setLabDetails(e.target.value)}
@@ -569,32 +731,23 @@ export default function ConsultationClient({
           </div>
         </div>
 
-        {/* Prescription */}
+        {/* Prescription (table redesigned) */}
         <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-4">
           <div className="flex items-center justify-between">
             <div className="text-sm font-semibold text-slate-900">
               Prescription
             </div>
+
             <button
               type="button"
-              className="rounded-lg border bg-white px-3 py-2 text-sm hover:bg-gray-50"
-              onClick={() => {
-                setRxItems((prev) => [...prev, blankRxItem(prev.length)]);
-              }}
+              className="inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm hover:bg-gray-50"
+              onClick={() =>
+                setRxItems((prev) => [...prev, blankRxItem(prev.length)])
+              }
             >
-              ➕ Add Medicine
+              <Plus className="h-4 w-4" />
+              Add Medicine
             </button>
-          </div>
-
-          <div>
-            <div className="text-sm font-medium text-slate-700 mb-2">
-              Prescription Notes
-            </div>
-            <textarea
-              className={textAreaCls()}
-              value={rxNotes}
-              onChange={(e) => setRxNotes(e.target.value)}
-            />
           </div>
 
           <div className="overflow-x-auto">
@@ -604,99 +757,92 @@ export default function ConsultationClient({
                   <th className="px-2 py-2 text-left font-medium min-w-[220px]">
                     Medicine
                   </th>
-                  <th className="px-2 py-2 text-left font-medium min-w-[120px]">
-                    Dosage
+                  <th className="px-2 py-2 text-center font-medium min-w-[170px]">
+                    Dosage (M / A / N)
                   </th>
-                  <th className="px-2 py-2 text-center font-medium">M</th>
-                  <th className="px-2 py-2 text-center font-medium">A</th>
-                  <th className="px-2 py-2 text-center font-medium">N</th>
-                  <th className="px-2 py-2 text-center font-medium min-w-[120px]">
+                  <th className="px-2 py-2 text-center font-medium min-w-[110px]">
                     Before food
                   </th>
-                  <th className="px-2 py-2 text-left font-medium min-w-[120px]">
-                    Days
+                  <th className="px-2 py-2 text-left font-medium min-w-[110px]">
+                    Duration
                   </th>
-                  <th className="px-2 py-2 text-left font-medium min-w-[200px]">
+                  <th className="px-2 py-2 text-left font-medium min-w-[140px]">
+                    Periodicity
+                  </th>
+                  <th className="px-2 py-2 text-left font-medium min-w-[150px]">
+                    Start Date
+                  </th>
+                  <th className="px-2 py-2 text-left font-medium min-w-[240px]">
                     Instructions
                   </th>
-                  <th className="px-2 py-2 text-right font-medium">Action</th>
+                  <th className="px-2 py-2 text-right font-medium"> </th>
                 </tr>
               </thead>
 
               <tbody>
                 {rxItems.map((it, idx) => (
-                  <tr key={idx} className="border-b last:border-b-0">
+                  <tr key={idx} className="border-b last:border-b-0 align-top">
                     <td className="px-2 py-2">
-                      <input
-                        className={inputCls()}
+                      <MedicineComboBox
                         value={it.medicineName}
-                        onChange={(e) => {
-                          const v = e.target.value;
+                        onChange={(v) =>
                           setRxItems((prev) =>
                             prev.map((x, i) =>
                               i === idx ? { ...x, medicineName: v } : x
                             )
-                          );
-                        }}
+                          )
+                        }
+                        placeholder="Select / type medicine"
                       />
                     </td>
+
                     <td className="px-2 py-2">
-                      <input
-                        className={inputCls()}
-                        value={it.dosage}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setRxItems((prev) =>
-                            prev.map((x, i) =>
-                              i === idx ? { ...x, dosage: v } : x
-                            )
-                          );
-                        }}
-                      />
+                      <div className="grid grid-cols-3 gap-2">
+                        <input
+                          className={inputCls()}
+                          inputMode="numeric"
+                          placeholder="M"
+                          value={it.morningDose}
+                          onChange={(e) => {
+                            const v = toNumStr(e.target.value);
+                            setRxItems((prev) =>
+                              prev.map((x, i) =>
+                                i === idx ? { ...x, morningDose: v } : x
+                              )
+                            );
+                          }}
+                        />
+                        <input
+                          className={inputCls()}
+                          inputMode="numeric"
+                          placeholder="A"
+                          value={it.afternoonDose}
+                          onChange={(e) => {
+                            const v = toNumStr(e.target.value);
+                            setRxItems((prev) =>
+                              prev.map((x, i) =>
+                                i === idx ? { ...x, afternoonDose: v } : x
+                              )
+                            );
+                          }}
+                        />
+                        <input
+                          className={inputCls()}
+                          inputMode="numeric"
+                          placeholder="N"
+                          value={it.nightDose}
+                          onChange={(e) => {
+                            const v = toNumStr(e.target.value);
+                            setRxItems((prev) =>
+                              prev.map((x, i) =>
+                                i === idx ? { ...x, nightDose: v } : x
+                              )
+                            );
+                          }}
+                        />
+                      </div>
                     </td>
-                    <td className="px-2 py-2 text-center">
-                      <input
-                        type="checkbox"
-                        checked={it.morning}
-                        onChange={(e) =>
-                          setRxItems((prev) =>
-                            prev.map((x, i) =>
-                              i === idx
-                                ? { ...x, morning: e.target.checked }
-                                : x
-                            )
-                          )
-                        }
-                      />
-                    </td>
-                    <td className="px-2 py-2 text-center">
-                      <input
-                        type="checkbox"
-                        checked={it.afternoon}
-                        onChange={(e) =>
-                          setRxItems((prev) =>
-                            prev.map((x, i) =>
-                              i === idx
-                                ? { ...x, afternoon: e.target.checked }
-                                : x
-                            )
-                          )
-                        }
-                      />
-                    </td>
-                    <td className="px-2 py-2 text-center">
-                      <input
-                        type="checkbox"
-                        checked={it.night}
-                        onChange={(e) =>
-                          setRxItems((prev) =>
-                            prev.map((x, i) =>
-                              i === idx ? { ...x, night: e.target.checked } : x
-                            )
-                          )
-                        }
-                      />
-                    </td>
+
                     <td className="px-2 py-2 text-center">
                       <input
                         type="checkbox"
@@ -712,13 +858,15 @@ export default function ConsultationClient({
                         }
                       />
                     </td>
+
                     <td className="px-2 py-2">
                       <input
                         className={inputCls()}
                         inputMode="numeric"
+                        placeholder="Days"
                         value={it.durationDays}
                         onChange={(e) => {
-                          const v = e.target.value.replace(/[^0-9]/g, "");
+                          const v = toNumStr(e.target.value);
                           setRxItems((prev) =>
                             prev.map((x, i) =>
                               i === idx ? { ...x, durationDays: v } : x
@@ -727,9 +875,42 @@ export default function ConsultationClient({
                         }}
                       />
                     </td>
+
                     <td className="px-2 py-2">
                       <input
                         className={inputCls()}
+                        placeholder="Daily / Alternate..."
+                        value={it.periodicity}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setRxItems((prev) =>
+                            prev.map((x, i) =>
+                              i === idx ? { ...x, periodicity: v } : x
+                            )
+                          );
+                        }}
+                      />
+                    </td>
+
+                    <td className="px-2 py-2">
+                      <input
+                        type="date"
+                        className={inputCls()}
+                        value={it.startDate}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setRxItems((prev) =>
+                            prev.map((x, i) =>
+                              i === idx ? { ...x, startDate: v } : x
+                            )
+                          );
+                        }}
+                      />
+                    </td>
+
+                    <td className="px-2 py-2">
+                      <textarea
+                        className={inputCls() + " min-h-[42px] resize-y"}
                         value={it.instructions}
                         onChange={(e) => {
                           const v = e.target.value;
@@ -739,12 +920,14 @@ export default function ConsultationClient({
                             )
                           );
                         }}
+                        placeholder="e.g. After lunch"
                       />
                     </td>
+
                     <td className="px-2 py-2 text-right">
                       <button
                         type="button"
-                        className="rounded-lg border bg-white px-3 py-1.5 text-xs hover:bg-gray-50"
+                        className="inline-flex items-center justify-center rounded-lg border bg-white p-2 hover:bg-gray-50 disabled:opacity-60"
                         onClick={() =>
                           setRxItems((prev) => prev.filter((_, i) => i !== idx))
                         }
@@ -755,7 +938,7 @@ export default function ConsultationClient({
                             : "Remove"
                         }
                       >
-                        Remove
+                        <Trash2 className="h-4 w-4" />
                       </button>
                     </td>
                   </tr>
@@ -764,8 +947,16 @@ export default function ConsultationClient({
             </table>
           </div>
 
-          {/* Optional bottom Save (same action) */}
+          {/* Optional bottom Save */}
           <div className="flex justify-end gap-2">
+            <label className="inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={admit}
+                onChange={(e) => setAdmit(e.target.checked)}
+              />
+              <span className="font-medium">Admit</span>
+            </label>
             <button
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
               disabled={saving}

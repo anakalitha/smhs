@@ -1,3 +1,4 @@
+// src/app/api/doctor/visits/[visitId]/done/route.ts
 import { NextResponse } from "next/server";
 import type { RowDataPacket, ResultSetHeader } from "mysql2/promise";
 import { db } from "@/lib/db";
@@ -72,7 +73,6 @@ export async function POST(req: Request, ctx: Ctx) {
     );
   }
 
-  // Verify visit belongs to org/branch (+ ownership if non-admin)
   const [vRows] = await db.execute<RowDataPacket[]>(
     `
     SELECT id, doctor_id
@@ -93,15 +93,50 @@ export async function POST(req: Request, ctx: Ctx) {
     return NextResponse.json({ error: "Forbidden." }, { status: 403 });
   }
 
-  // Mark queue entry as DONE
-  await db.execute<ResultSetHeader>(
-    `
-    UPDATE queue_entries
-    SET status = 'DONE'
-    WHERE visit_id = :visitId
-    `,
-    { visitId: id }
-  );
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
 
-  return NextResponse.json({ ok: true });
+    // ✅ Use positional placeholders to avoid named placeholder issues
+    const [vRes] = await conn.execute<ResultSetHeader>(
+      `
+      UPDATE visits
+      SET status = 'COMPLETED'
+      WHERE id = ?
+        AND organization_id = ?
+        AND branch_id = ?
+      `,
+      [id, orgId, branchId]
+    );
+
+    // (Optional) if you want to ensure it actually updated:
+    if (!vRes.affectedRows) {
+      throw new Error("Visit update affected 0 rows.");
+    }
+
+    await conn.execute<ResultSetHeader>(
+      `
+      UPDATE queue_entries
+      SET status = 'COMPLETED'
+      WHERE visit_id = ?
+      `,
+      [id]
+    );
+
+    await conn.commit();
+    return NextResponse.json({ ok: true });
+  } catch (e: unknown) {
+    try {
+      await conn.rollback();
+    } catch {}
+
+    // ✅ Do not hide the real error while debugging
+    const msg =
+      e instanceof Error ? e.message : "Failed to mark visit COMPLETED.";
+    console.error("COMPLETED route error:", e);
+
+    return NextResponse.json({ error: msg }, { status: 500 });
+  } finally {
+    conn.release();
+  }
 }

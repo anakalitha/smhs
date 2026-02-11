@@ -57,7 +57,7 @@ type VisitRow = RowDataPacket & {
   doctorId: number | null;
   doctorName: string | null;
   tokenNo: number | null;
-  queueStatus: "WAITING" | "NEXT" | "IN_ROOM" | "DONE" | null;
+  queueStatus: "WAITING" | "NEXT" | "IN_ROOM" | "COMPLETED" | null;
 
   consultationPaymentModeCode: string | null;
 

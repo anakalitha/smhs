@@ -1,10 +1,10 @@
-// src/app/api/setup/reset-db/route.ts
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 
 /**
  * Resets ONLY transactional tables (patients/visits/queue/charges/payments/etc)
- * while preserving master/config tables (users/roles/services/rates/modes/doctors).
+ * while preserving master/config tables (users/roles/services/rates/modes/doctors/...).
  *
  * SAFETY:
  * - Blocked in production
@@ -13,44 +13,65 @@ import { db } from "@/lib/db";
 
 const DEFAULT_TOKEN_ENV = "SETUP_RESET_TOKEN";
 
-// Adjust only if your initial org/branch IDs differ
+// Adjust if your initial org/branch IDs differ
 const ORG_ID = 1;
 const BRANCH_ID = 1;
 
-// Transactional tables to TRUNCATE (order matters; children first).
-// If a table doesn't exist, it will be skipped.
+/**
+ * Transactional tables to TRUNCATE (order matters; children first).
+ * If a table doesn't exist, it will be skipped.
+ *
+ * ✅ This list includes newer workflow tables:
+ * - notifications (+ children)
+ * - visit_notes / visit_orders
+ * - prescriptions + items
+ * - pharma_orders
+ * - visit_documents / payment_documents
+ */
 const TRUNCATE_TABLES_IN_ORDER: string[] = [
-  // Payments ledger
+  // Notifications (children first)
+  "notification_actions",
+  "notification_events",
+  "notifications",
+
+  // Pharma workflow
+  "pharma_orders",
+
+  // Prescriptions (items first)
+  "prescription_items",
+  "prescriptions",
+
+  // Visit clinical data
+  "visit_orders",
+  "visit_notes",
+  "visit_documents",
+
+  // Payments (children first)
   "payment_allocations",
+  "payment_documents",
   "payments",
 
   // Charges
   "visit_charges",
 
-  // Queue / reception workflow
+  // Queue / workflow
   "queue_entries",
 
-  // Visits (depends on patients)
+  // Visits -> Patients
   "visits",
-
-  // Patients last (visits references patients)
   "patients",
 
-  // Add more transactional tables here if your schema contains them.
-  // Example (uncomment if they exist in your DB):
-  // "visit_notes",
-  // "visit_files",
-  // "lab_orders",
-  // "lab_results",
-  // "scan_orders",
-  // "scan_results",
-  // "prescriptions",
-  // "consultation_notes",
-  // "notifications",
+  // Optional: wipe sessions for clean testing (uncomment if you want)
+  // "sessions",
 ];
 
-async function tableExists(conn: any, tableName: string): Promise<boolean> {
-  const [rows] = await conn.execute(
+type CountRow = RowDataPacket & { c: number };
+
+async function tableExists(
+  conn: PoolConnection,
+  tableName: string
+): Promise<boolean> {
+  const [rows] = await conn.execute<CountRow[]>(
     `
     SELECT COUNT(*) AS c
     FROM information_schema.tables
@@ -59,8 +80,13 @@ async function tableExists(conn: any, tableName: string): Promise<boolean> {
     `,
     [tableName]
   );
-  const c = Number((rows as any[])[0]?.c || 0);
+
+  const c = Number(rows?.[0]?.c ?? 0);
   return c > 0;
+}
+
+async function setFkChecks(conn: PoolConnection, on: boolean) {
+  await conn.execute(`SET FOREIGN_KEY_CHECKS=${on ? 1 : 0}`);
 }
 
 export async function POST(req: Request) {
@@ -106,25 +132,30 @@ export async function POST(req: Request) {
   const truncated: string[] = [];
   const skippedMissing: string[] = [];
 
+  let step = "init";
   try {
+    step = "beginTransaction";
     await conn.beginTransaction();
 
-    // Disable FK checks during truncate
-    await conn.execute("SET FOREIGN_KEY_CHECKS=0");
+    step = "disableFK";
+    await setFkChecks(conn, false);
 
     for (const t of TRUNCATE_TABLES_IN_ORDER) {
+      step = `check:${t}`;
       const exists = await tableExists(conn, t);
       if (!exists) {
         skippedMissing.push(t);
         continue;
       }
 
+      step = `truncate:${t}`;
       // TRUNCATE resets auto-increment
       await conn.execute(`TRUNCATE TABLE \`${t}\``);
       truncated.push(t);
     }
 
     // Reset patient counter so patient_code starts from 1 again
+    step = "resetPatientCounters";
     const counterExists = await tableExists(conn, "patient_counters");
     if (counterExists) {
       await conn.execute(
@@ -137,7 +168,10 @@ export async function POST(req: Request) {
       );
     }
 
-    await conn.execute("SET FOREIGN_KEY_CHECKS=1");
+    step = "enableFK";
+    await setFkChecks(conn, true);
+
+    step = "commit";
     await conn.commit();
 
     return NextResponse.json({
@@ -146,18 +180,34 @@ export async function POST(req: Request) {
       truncated,
       skippedMissing,
       notes: [
-        "Master tables were preserved (users/roles/services/rates/payment_modes/doctors/etc).",
-        "patient_counters.next_seq reset to 1 (org=1, branch=1).",
+        "Master tables were preserved (users/roles/services/rates/payment_modes/doctors/referralperson/medicines/etc).",
+        `patient_counters.next_seq reset to 1 (org=${ORG_ID}, branch=${BRANCH_ID}).`,
+        "If you want to force logout for all users during testing, uncomment sessions in TRUNCATE_TABLES_IN_ORDER.",
       ],
     });
-  } catch (e) {
-    await conn.rollback();
+  } catch (e: unknown) {
     try {
-      await conn.execute("SET FOREIGN_KEY_CHECKS=1");
+      step = `rollback(${step})`;
+      await conn.rollback();
     } catch {}
-    console.error("❌ reset-db failed:", e);
+
+    try {
+      // Best-effort FK re-enable
+      await setFkChecks(conn, true);
+    } catch {}
+
+    const msg =
+      e instanceof Error ? e.message : "Reset failed. Check server logs.";
+    console.error("❌ reset-db failed at step:", step, e);
+
     return NextResponse.json(
-      { error: "Reset failed. Check server logs." },
+      {
+        error: "Reset failed.",
+        failedStep: step,
+        details: msg,
+        truncatedSoFar: truncated,
+        skippedMissing,
+      },
       { status: 500 }
     );
   } finally {

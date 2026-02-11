@@ -36,7 +36,7 @@ export async function GET() {
     visitId: number;
     patientDbId: number;
     token: number;
-    status: "WAITING" | "NEXT" | "IN_ROOM" | "DONE";
+    status: "WAITING" | "NEXT" | "IN_ROOM" | "COMPLETED";
     patientId: string;
     name: string;
     phone: string | null;
@@ -74,7 +74,7 @@ export async function GET() {
       `SELECT
          COUNT(DISTINCT v.id) AS registeredToday,
          COALESCE(SUM(CASE WHEN q.status = 'WAITING' or q.status = 'NEXT' THEN 1 ELSE 0 END), 0) AS waiting,
-         COALESCE(SUM(CASE WHEN q.status = 'DONE' THEN 1 ELSE 0 END), 0) AS done
+         COALESCE(SUM(CASE WHEN q.status = 'COMPLETED' THEN 1 ELSE 0 END), 0) AS done
        FROM visits v
        LEFT JOIN queue_entries q ON q.visit_id = v.id
        WHERE v.organization_id = ?

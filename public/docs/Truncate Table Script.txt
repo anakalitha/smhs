@@ -1,0 +1,106 @@
+/* =========================================================
+   SMNH HMS - Reset transactional data ONLY
+   - Skips missing tables
+   - Disables FK checks temporarily
+   - Resets patient_counters.next_seq back to 1 (org=1, branch=1)
+   ========================================================= */
+
+USE smnh_hms;
+
+SET @ORG_ID := 1;
+SET @BRANCH_ID := 1;
+
+-- Helper: truncate table if it exists
+DROP PROCEDURE IF EXISTS truncate_if_exists;
+DELIMITER $$
+
+CREATE PROCEDURE truncate_if_exists(IN t VARCHAR(128))
+BEGIN
+  DECLARE c INT DEFAULT 0;
+
+  SELECT COUNT(*)
+    INTO c
+  FROM information_schema.tables
+  WHERE table_schema = DATABASE()
+    AND table_name = t;
+
+  IF c > 0 THEN
+    SET @sql := CONCAT('TRUNCATE TABLE `', t, '`');
+    PREPARE stmt FROM @sql;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+  END IF;
+END$$
+
+DELIMITER ;
+
+-- IMPORTANT: TRUNCATE implicitly commits; don't wrap in START TRANSACTION.
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- Notifications (children first)
+CALL truncate_if_exists('notification_actions');
+CALL truncate_if_exists('notification_events');
+CALL truncate_if_exists('notifications');
+
+-- Pharma workflow
+CALL truncate_if_exists('pharma_orders');
+
+-- Prescriptions (items first)
+CALL truncate_if_exists('prescription_items');
+CALL truncate_if_exists('prescriptions');
+
+-- Visit clinical data
+CALL truncate_if_exists('visit_orders');
+CALL truncate_if_exists('visit_notes');
+CALL truncate_if_exists('visit_documents');
+
+-- Payment docs / attachments (if used)
+CALL truncate_if_exists('payment_documents');
+
+-- Payments (children first)
+CALL truncate_if_exists('payment_allocations');
+CALL truncate_if_exists('payments');
+
+-- Charges
+CALL truncate_if_exists('visit_charges');
+
+-- Queue
+CALL truncate_if_exists('queue_entries');
+
+-- Visits -> Patients
+CALL truncate_if_exists('visits');
+CALL truncate_if_exists('patients');
+
+-- Optional: clear login sessions so you start clean
+-- CALL truncate_if_exists('sessions');
+
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- Reset patient counters (if table exists)
+SET @pc_exists := (
+  SELECT COUNT(*)
+  FROM information_schema.tables
+  WHERE table_schema = DATABASE()
+    AND table_name = 'patient_counters'
+);
+
+SET @sql := IF(
+  @pc_exists > 0,
+  CONCAT(
+    'UPDATE patient_counters SET next_seq = 1 ',
+    'WHERE organization_id = ', @ORG_ID,
+    ' AND branch_id = ', @BRANCH_ID
+  ),
+  'SELECT ''patient_counters table not found, skipping reset'' AS info'
+);
+
+PREPARE stmt2 FROM @sql;
+EXECUTE stmt2;
+DEALLOCATE PREPARE stmt2;
+
+-- Cleanup helper
+DROP PROCEDURE IF EXISTS truncate_if_exists;
+
+SELECT 'OK: Transactional tables truncated (where present).' AS status;
+
+ALTER TABLE patients AUTO_INCREMENT = 1;
