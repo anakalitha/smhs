@@ -304,7 +304,7 @@ export async function GET(req: Request, ctx: Ctx) {
     const [itRows] = await db.execute<RowDataPacket[]>(
       `
       SELECT medicine_name, dosage, morning, afternoon, night, before_food, duration_days, instructions, sort_order
-      FROM prescription_items
+      FROM prescription_items 
       WHERE prescription_id = :pid
       ORDER BY sort_order ASC, id ASC
       `,

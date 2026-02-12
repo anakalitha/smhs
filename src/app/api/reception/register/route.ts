@@ -48,6 +48,11 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json()) as {
+    /**
+     * Optional: When registering an existing patient, pass patientCode so we reuse the existing patient row
+     * instead of creating a new one (prevents duplicates in Doctor Patient Lookup).
+     */
+    patientCode?: string;
     visitDate?: string;
     name?: string;
     phone?: string;
@@ -194,71 +199,127 @@ export async function POST(req: Request) {
       );
     }
 
-    // 3) Patient counter
-    // 3) Patient counter + branch code + YYYYMM from visitDate
+    // 3) Resolve / Create patient
+    //    - If patientCode is provided, reuse that patient.
+    //    - Else, if phone is provided, try to reuse the most recently created patient with same phone.
+    //      (This matches the "existing patient" workflow expectation and prevents duplicates.)
     const orgId = Number(me.organizationId);
     const branchId = Number(me.branchId);
 
-    // Parse visit date parts
-    const parts = visitDate.split("-");
-    const admissionYear = parseInt(parts[0], 10);
-    const admissionMonth = parseInt(parts[1], 10);
-    const yyyy = String(admissionYear);
-    const mm = String(admissionMonth).padStart(2, "0");
+    const requestedPatientCode = String(body.patientCode ?? "").trim();
 
-    // Get branch code (SMNH-MCC)
-    const [branchRows] = await conn.execute<BranchRow[]>(
-      `SELECT code
-   FROM branches
-   WHERE id = :branch_id
-     AND organization_id = :org_id
-   LIMIT 1
-   FOR UPDATE`,
-      { branch_id: branchId, org_id: orgId }
-    );
+    let patientId: number | null = null;
+    let patientCode: string | null = null;
 
-    if (branchRows.length === 0 || !branchRows[0].code) {
+    if (requestedPatientCode) {
+      const [pRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT id, patient_code FROM patients WHERE patient_code = :code AND organization_id = :org AND branch_id = :branch LIMIT 1`,
+        { code: requestedPatientCode, org: orgId, branch: branchId }
+      );
+      if (pRows.length > 0) {
+        const pid = Number(pRows[0].id);
+        if (Number.isFinite(pid) && pid > 0) {
+          patientId = pid;
+          patientCode = String(pRows[0].patient_code);
+        }
+      }
+    } else if (phoneClean) {
+      // Do NOT reuse by phone. Existing patient must be explicitly selected.
+      // const [pRows] = await conn.execute<RowDataPacket[]>(
+      //   `
+      //   SELECT id, patient_code
+      //   FROM patients
+      //   WHERE phone = :phone
+      //   ORDER BY id DESC
+      //   LIMIT 1
+      //   `,
+      //   { phone: phoneClean }
+      // );
+      // if (pRows.length > 0) {
+      //   const pid = Number(pRows[0].id);
+      //   if (Number.isFinite(pid) && pid > 0) {
+      //     patientId = pid;
+      //     patientCode = String(pRows[0].patient_code);
+      //   }
+      // }
+    }
+
+    // If patient not resolved -> create a new patient using counter + branch code + YYYYMM from visitDate
+    if (!patientId) {
+      // Parse visit date parts
+      const parts = visitDate.split("-");
+      const admissionYear = parseInt(parts[0], 10);
+      const admissionMonth = parseInt(parts[1], 10);
+      const yyyy = String(admissionYear);
+      const mm = String(admissionMonth).padStart(2, "0");
+
+      // Get branch code (SMNH-MCC)
+      const [branchRows] = await conn.execute<BranchRow[]>(
+        `SELECT code
+         FROM branches
+         WHERE id = :branch_id
+           AND organization_id = :org_id
+         LIMIT 1
+         FOR UPDATE`,
+        { branch_id: branchId, org_id: orgId }
+      );
+
+      if (branchRows.length === 0 || !branchRows[0].code) {
+        await conn.rollback();
+        return NextResponse.json({ error: "Invalid branch." }, { status: 400 });
+      }
+
+      const branchCode = String(branchRows[0].code).trim();
+
+      // Atomic counter (safe)
+      const [ctrRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT next_seq FROM patient_counters
+         WHERE organization_id = :org AND branch_id = :branch
+         FOR UPDATE`,
+        { org: orgId, branch: branchId }
+      );
+
+      let seq = 1;
+      if (ctrRows.length === 0) {
+        await conn.execute(
+          `INSERT INTO patient_counters (organization_id, branch_id, next_seq)
+           VALUES (:org, :branch, 2)`,
+          { org: orgId, branch: branchId }
+        );
+      } else {
+        seq = Number(ctrRows[0].next_seq);
+        await conn.execute(
+          `UPDATE patient_counters
+           SET next_seq = next_seq + 1
+           WHERE organization_id = :org AND branch_id = :branch`,
+          { org: orgId, branch: branchId }
+        );
+      }
+
+      // Final code: OP_SMNH-MCC_2025091
+      patientCode = `OP_${branchCode}_${yyyy}${mm}${seq}`;
+
+      // Insert patient
+      const [pIns] = await conn.execute<ResultSetHeader>(
+        `INSERT INTO patients (organization_id, branch_id, patient_code, full_name, phone) VALUES (:org, :branch, :code, :name, :phone)`,
+        {
+          org: orgId,
+          branch: branchId,
+          code: patientCode,
+          name,
+          phone: phoneClean,
+        }
+      );
+      patientId = Number(pIns.insertId);
+    }
+
+    if (!patientId || !patientCode) {
       await conn.rollback();
-      return NextResponse.json({ error: "Invalid branch." }, { status: 400 });
-    }
-
-    const branchCode = String(branchRows[0].code).trim();
-
-    // Atomic counter (safe)
-    const [ctrRows] = await conn.execute<RowDataPacket[]>(
-      `SELECT next_seq FROM patient_counters
-   WHERE organization_id = :org AND branch_id = :branch
-   FOR UPDATE`,
-      { org: orgId, branch: branchId }
-    );
-
-    let seq = 1;
-    if (ctrRows.length === 0) {
-      await conn.execute(
-        `INSERT INTO patient_counters (organization_id, branch_id, next_seq)
-     VALUES (:org, :branch, 2)`,
-        { org: orgId, branch: branchId }
-      );
-    } else {
-      seq = Number(ctrRows[0].next_seq);
-      await conn.execute(
-        `UPDATE patient_counters
-     SET next_seq = next_seq + 1
-     WHERE organization_id = :org AND branch_id = :branch`,
-        { org: orgId, branch: branchId }
+      return NextResponse.json(
+        { error: "Failed to resolve/create patient." },
+        { status: 500 }
       );
     }
-
-    // Final code: OP_SMNH-MCC_2025091
-    const patientCode = `OP_${branchCode}_${yyyy}${mm}${seq}`;
-
-    // 4) Insert patient
-    const [pIns] = await conn.execute<ResultSetHeader>(
-      `INSERT INTO patients (patient_code, full_name, phone)
-       VALUES (:code, :name, :phone)`,
-      { code: patientCode, name, phone: phoneClean }
-    );
-    const patientId = pIns.insertId;
 
     // 5) Create visit
     const [vIns] = await conn.execute<ResultSetHeader>(

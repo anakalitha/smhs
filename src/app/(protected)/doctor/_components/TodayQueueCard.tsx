@@ -154,6 +154,7 @@ export default function TodayQueueCard() {
         <VisitRegistrationForm
           mode="create"
           showFetch={true}
+          searchFirst={true}
           lockedDoctorId={q.doctorId ?? undefined}
           hideDoctorField={true}
           openBillOnCreate={false}

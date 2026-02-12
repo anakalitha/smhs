@@ -65,11 +65,6 @@ type Props = {
   mode?: Mode;
   visitId?: number | null; // ✅ required for edit mode
   showFetch?: boolean;
-  /**
-   * Create-mode only: force a search-first workflow.
-   * The form fields are shown only after searching.
-   */
-  searchFirst?: boolean;
   onSuccess?: (info: { visitId: number }) => void;
   openBillOnCreate?: boolean;
   lockedDoctorId?: number; // if provided, auto-set and lock doctor
@@ -87,32 +82,6 @@ function todayYYYYMMDD_IST() {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
-}
-
-function looksLikePatientCode(s: string) {
-  const q = s.trim().toUpperCase();
-  // Your codes look like: OP_SMNH-PJE_2026023 (has OP_ and underscores)
-  if (q.startsWith("OP_")) return true;
-  // Also treat anything with "_" + letters/digits as code-ish
-  if (q.includes("_") && /[A-Z]/.test(q)) return true;
-  return false;
-}
-
-function classifySearchInput(raw: string): "PATIENT_CODE" | "PHONE" | "NAME" {
-  const q = raw.trim();
-  if (!q) return "NAME";
-
-  if (looksLikePatientCode(q)) return "PATIENT_CODE";
-
-  const d = digitsOnly(q);
-  // If user typed 10 digits (possibly with spaces), it's phone
-  if (d.length === 10) return "PHONE";
-
-  // If it's mostly digits but not 10, still treat as phone-ish and prefill phone
-  // (optional but nice: comment out if you don't want this)
-  if (d.length >= 6 && d.length === q.replace(/\D/g, "").length) return "PHONE";
-
-  return "NAME";
 }
 
 function digitsOnly(s: string) {
@@ -208,18 +177,12 @@ export default function VisitRegistrationForm({
   mode = "create",
   visitId = null,
   showFetch = mode === "create",
-  searchFirst = false,
   onSuccess,
   openBillOnCreate = true,
   lockedDoctorId,
   hideDoctorField = false,
 }: Props) {
   const isEdit = mode === "edit";
-
-  const [stage, setStage] = useState<"search" | "form">(
-    !isEdit && searchFirst ? "search" : "form"
-  );
-  const [searchBanner, setSearchBanner] = useState<string | null>(null);
 
   const [doctors, setDoctors] = useState<DoctorOption[]>([]);
   const [loadingDoctors, setLoadingDoctors] = useState(false);
@@ -289,35 +252,11 @@ export default function VisitRegistrationForm({
   const [pickOpen, setPickOpen] = useState(false);
   const [prefillHits, setPrefillHits] = useState<PatientHit[]>([]);
 
-  // When a receptionist selects an existing patient from the prefill search,
-  // keep the selected patient's code so the backend can create a NEW VISIT
-  // for the SAME patient row (prevents duplicate patient rows).
-  const [existingPatientCode, setExistingPatientCode] = useState<string>("");
-
   // Reset confirm
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
   function markTouched(field: keyof FieldErrors) {
     setTouched((t) => ({ ...t, [field]: true }));
-  }
-
-  function resetForNewSearch() {
-    // Clear selection + search UI state
-    setExistingPatientCode("");
-    setPrefillQuery("");
-    setPrefillHits([]);
-    setPrefillError(null);
-    setSearchBanner(null);
-
-    // Close pick/confirm dialogs
-    setPickOpen(false);
-    setConfirmPickOpen(false);
-
-    // Patient-specific fields
-    setReferral(null);
-
-    // Reset form (clears name/phone etc; keeps defaults)
-    doReset();
   }
 
   const validate = useCallback(
@@ -575,7 +514,6 @@ export default function VisitRegistrationForm({
 
   function doReset() {
     const firstService = services[0] || null;
-    setExistingPatientCode("");
     setReferral(null);
     setForm((f) => ({
       ...f,
@@ -617,7 +555,6 @@ export default function VisitRegistrationForm({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            patientCode: existingPatientCode || undefined,
             visitDate: form.visitDate,
             name: form.name.trim(),
             phone: digitsOnly(form.phone) || null,
@@ -639,7 +576,6 @@ export default function VisitRegistrationForm({
         }
 
         setFormSuccess("Registered successfully.");
-        setExistingPatientCode("");
 
         const createdVisitId = Number(data?.visitId || 0);
         if (createdVisitId && onSuccess) onSuccess({ visitId: createdVisitId });
@@ -733,27 +669,6 @@ export default function VisitRegistrationForm({
 
       if (hits.length === 0) {
         setPrefillError("No matches found.");
-        const q = prefillQuery.trim();
-        const kind = classifySearchInput(q);
-
-        // Search-first flow: move to empty registration form automatically
-        if (!isEdit && searchFirst) {
-          setExistingPatientCode("");
-          setForm((f) => ({
-            ...f,
-            name: kind === "NAME" ? q : "",
-            phone: kind === "PHONE" ? formatPhoneUI(digitsOnly(q)) : "",
-          }));
-
-          setReferral(null);
-          setSearchBanner(
-            `No existing patient found for "${q}". Registering a new patient.`
-          );
-          setStage("form");
-          setPrefillQuery("");
-          setPrefillHits([]);
-          setPrefillError(null);
-        }
         return;
       }
 
@@ -771,7 +686,6 @@ export default function VisitRegistrationForm({
   }
 
   function applyPatient(hit: PatientHit) {
-    setExistingPatientCode(hit.patientCode || "");
     setForm((f) => ({
       ...f,
       name: hit.name || "",
@@ -797,18 +711,12 @@ export default function VisitRegistrationForm({
 
     setPickOpen(false);
     setConfirmPickOpen(false);
-
-    if (!isEdit && searchFirst) {
-      setSearchBanner(null);
-      setStage("form");
-    }
   }
 
   const singleHit = prefillHits[0] ?? null;
 
   return (
     <div className="rounded-2xl border bg-stone-50 shadow-sm">
-      {/* Header */}
       <div className="border-b px-5 py-4 flex items-start justify-between gap-3">
         <div>
           <div className="text-lg font-semibold text-slate-900">
@@ -817,401 +725,353 @@ export default function VisitRegistrationForm({
           <div className="text-sm text-slate-600 mt-0.5">
             {isEdit
               ? "Update patient details and payment status."
-              : searchFirst
-              ? "Search existing patients first. If none found, continue to register."
               : "Enter patient details and payment details."}
           </div>
         </div>
 
-        {/* Search toolbar (only when NOT search-first, or when search-first and still in search stage) */}
-        {showFetch && !isEdit && (!searchFirst || stage === "search") && (
+        {showFetch && !isEdit && (
           <div className="flex items-center gap-2">
             <input
               className={inputClass}
-              placeholder="Search by name / phone / patient id"
+              placeholder="Find existing patient (name/phone/id)"
               value={prefillQuery}
               onChange={(e) => setPrefillQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && runPrefillSearch()}
             />
             <button
               className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
               disabled={prefillLoading || !prefillQuery.trim()}
               onClick={runPrefillSearch}
             >
-              {prefillLoading ? "Searching..." : "Fetch"}
+              {prefillLoading ? "Searching..." : "Find"}
             </button>
           </div>
         )}
       </div>
 
-      {/* Search-first stage: show only the search bar in the header */}
-      {!isEdit && searchFirst && stage === "search" ? (
-        prefillError ? (
-          <div className="px-5 py-4">
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {prefillError}
-            </div>
-          </div>
-        ) : null
-      ) : (
-        <>
-          {/* Banner after search-first transition */}
-          {searchBanner && !isEdit && (
-            <div className="px-5 pt-4">
-              <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
-                {searchBanner}
-                <button
-                  type="button"
-                  className="rounded-lg border bg-white px-3 py-2 text-sm hover:bg-gray-50"
-                  onClick={() => {
-                    resetForNewSearch();
-                    setStage("search");
-                  }}
-                >
-                  Search again
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Grouped sections (STACKED: Patient Data on top, Payment Data below) */}
-          <div className="p-5 space-y-5">
-            <SectionCard
-              title="Patient Data"
-              className="bg-slate-200 text-black"
-              contentClassName="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4"
-            >
-              <FormField
-                label="Visit Date"
-                error={touched.visitDate ? errors.visitDate : undefined}
-                className="lg:col-span-1"
-              >
-                <input
-                  className={inputClass}
-                  type="date"
-                  value={form.visitDate}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, visitDate: e.target.value }))
-                  }
-                  onBlur={() => markTouched("visitDate")}
-                />
-              </FormField>
-
-              <FormField
-                label="Name"
-                error={touched.name ? errors.name : undefined}
-                className="lg:col-span-3"
-              >
-                <input
-                  className={inputClass}
-                  placeholder="Full name"
-                  value={form.name}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, name: e.target.value }))
-                  }
-                  onBlur={() => markTouched("name")}
-                />
-              </FormField>
-
-              <FormField
-                label="Phone (optional)"
-                error={touched.phone ? errors.phone : undefined}
-                className="lg:col-span-2"
-              >
-                <input
-                  className={inputClass}
-                  placeholder="10-digit phone"
-                  value={form.phone}
-                  onChange={(e) => {
-                    const d = digitsOnly(e.target.value);
-                    setForm((f) => ({ ...f, phone: formatPhoneUI(d) }));
-                  }}
-                  onBlur={() => markTouched("phone")}
-                  inputMode="numeric"
-                />
-              </FormField>
-
-              <FormField label="Referred By" className="lg:col-span-3">
-                <ReferralComboBox value={referral} onChange={setReferral} />
-              </FormField>
-
-              {!hideDoctorField && (
-                <FormField
-                  label={
-                    <div className="flex items-center justify-between">
-                      <span>Consulting Doctor</span>
-                      <button
-                        type="button"
-                        className="text-sm text-blue-700 hover:text-blue-900"
-                        onClick={() => setShowAddDoctor(true)}
-                      >
-                        + Add Doctor
-                      </button>
-                    </div>
-                  }
-                  error={touched.doctorId ? errors.doctorId : undefined}
-                  className="lg:col-span-3"
-                >
-                  <select
-                    className={selectClass}
-                    value={form.doctorId}
-                    onChange={(e) => {
-                      setForm((f) => ({
-                        ...f,
-                        doctorId: Number(e.target.value),
-                      }));
-                      markTouched("doctorId");
-                    }}
-                    disabled={loadingDoctors}
-                  >
-                    {doctors.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.full_name}
-                      </option>
-                    ))}
-                  </select>
-                </FormField>
-              )}
-            </SectionCard>
-
-            {!isEdit ? (
-              <SectionCard
-                title="Payment Data"
-                className="bg-slate-200 text-black"
-                contentClassName="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"
-              >
-                <FormField
-                  label="Choose Service"
-                  error={touched.serviceId ? errors.serviceId : undefined}
-                >
-                  <select
-                    className={selectClass}
-                    value={form.serviceId}
-                    onChange={(e) => setService(Number(e.target.value))}
-                    disabled={loadingServices}
-                  >
-                    {services.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.displayName} ({Number(s.rate || 0).toFixed(0)})
-                      </option>
-                    ))}
-                  </select>
-                </FormField>
-
-                <FormField
-                  label="Amount to be paid"
-                  error={
-                    touched.paidNowAmount ? errors.paidNowAmount : undefined
-                  }
-                >
-                  <input
-                    className={inputClass}
-                    type="text"
-                    inputMode="decimal"
-                    placeholder={String(payable.toFixed(0))}
-                    value={form.paidNowAmount}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        paidNowAmount: sanitizeDecimalInput(e.target.value, {
-                          maxIntDigits: 6,
-                          maxDecimals: 2,
-                          max: payable,
-                        }),
-                      }))
-                    }
-                    onBlur={() => markTouched("paidNowAmount")}
-                    disabled={payable === 0}
-                  />
-                </FormField>
-
-                <FormField
-                  label="Payment Mode"
-                  error={touched.paymentMode ? errors.paymentMode : undefined}
-                >
-                  <select
-                    className={selectClass}
-                    value={form.paymentMode}
-                    onChange={(e) => {
-                      setForm((f) => ({ ...f, paymentMode: e.target.value }));
-                      markTouched("paymentMode");
-                    }}
-                    disabled={loadingModes || paidNow === 0}
-                  >
-                    {paymentModes.map((m) => (
-                      <option key={m.code} value={m.code}>
-                        {m.display_name}
-                      </option>
-                    ))}
-                  </select>
-                  {paidNow === 0 && (
-                    <div className="mt-2 text-xs text-slate-600">
-                      (Payment mode not required when Amount to be paid is 0)
-                    </div>
-                  )}
-                </FormField>
-
-                <FormField
-                  label="Discount / Waiver"
-                  error={
-                    touched.discountAmount ? errors.discountAmount : undefined
-                  }
-                >
-                  <input
-                    className={inputClass}
-                    type="text"
-                    inputMode="decimal"
-                    placeholder="0"
-                    value={form.discountAmount}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        discountAmount: sanitizeDecimalInput(e.target.value, {
-                          maxIntDigits: 6,
-                          maxDecimals: 2,
-                          max: Number(f.rate || 0),
-                        }),
-                      }))
-                    }
-                    onBlur={() => markTouched("discountAmount")}
-                  />
-                </FormField>
-
-                <FormField label="Remarks (optional)" className="lg:col-span-4">
-                  <input
-                    className={inputClass}
-                    placeholder="Any notes..."
-                    value={form.remarks}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, remarks: e.target.value }))
-                    }
-                  />
-                </FormField>
-              </SectionCard>
-            ) : (
-              <SectionCard
-                title="Payment Data"
-                className="bg-slate-200 text-black"
-                contentClassName="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"
-              >
-                <FormField
-                  label="Consulting Fee"
-                  error={
-                    touched.consultingFee ? errors.consultingFee : undefined
-                  }
-                >
-                  <input
-                    className={inputClass}
-                    type="text"
-                    inputMode="decimal"
-                    placeholder="0"
-                    value={form.consultingFee}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        consultingFee: sanitizeDecimalInput(e.target.value, {
-                          maxIntDigits: 6,
-                          maxDecimals: 2,
-                          max: 999999,
-                        }),
-                      }))
-                    }
-                    onBlur={() => markTouched("consultingFee")}
-                  />
-                </FormField>
-
-                <FormField
-                  label="Pay Status"
-                  error={touched.payStatus ? errors.payStatus : undefined}
-                >
-                  <select
-                    className={selectClass}
-                    value={form.payStatus}
-                    onChange={(e) => {
-                      setForm((f) => ({
-                        ...f,
-                        payStatus: e.target.value as PayStatus,
-                      }));
-                      markTouched("payStatus");
-                    }}
-                  >
-                    <option value="ACCEPTED">ACCEPTED</option>
-                    <option value="PENDING">PENDING</option>
-                    <option value="WAIVED">WAIVED</option>
-                  </select>
-                </FormField>
-
-                <FormField
-                  label="Payment Mode"
-                  error={touched.paymentMode ? errors.paymentMode : undefined}
-                >
-                  <select
-                    className={selectClass}
-                    value={form.paymentMode}
-                    onChange={(e) => {
-                      setForm((f) => ({ ...f, paymentMode: e.target.value }));
-                      markTouched("paymentMode");
-                    }}
-                    disabled={loadingModes}
-                  >
-                    {paymentModes.map((m) => (
-                      <option key={m.code} value={m.code}>
-                        {m.display_name}
-                      </option>
-                    ))}
-                  </select>
-                </FormField>
-
-                {loadingVisit && (
-                  <div className="text-sm text-slate-600 lg:col-span-3">
-                    Loading visit…
-                  </div>
-                )}
-              </SectionCard>
-            )}
-          </div>
-
-          {prefillError && (
-            <div className="px-5 pb-3 text-sm text-red-700">{prefillError}</div>
-          )}
-
-          {formError && (
-            <div className="px-5 pb-3 text-sm text-red-700">{formError}</div>
-          )}
-          {formSuccess && (
-            <div className="px-5 pb-3 text-sm text-green-700">
-              {formSuccess}
-            </div>
-          )}
-
-          <div className="border-t px-5 py-4 flex items-center justify-end gap-2">
-            {!isEdit && (
-              <button
-                className="rounded-lg border bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                onClick={() => setConfirmResetOpen(true)}
-                disabled={submitting}
-              >
-                Reset
-              </button>
-            )}
-
-            <button
-              className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-              onClick={submit}
-              disabled={
-                submitting ||
-                loadingDoctors ||
-                loadingModes ||
-                loadingServices ||
-                loadingVisit ||
-                !isValid
+      {/* Grouped sections (STACKED: Patient Data on top, Payment Data below) */}
+      <div className="p-5 space-y-5">
+        <SectionCard
+          title="Patient Data"
+          className="bg-slate-200 text-black"
+          contentClassName="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4"
+        >
+          <FormField
+            label="Visit Date"
+            error={touched.visitDate ? errors.visitDate : undefined}
+            className="lg:col-span-1"
+          >
+            <input
+              className={inputClass}
+              type="date"
+              value={form.visitDate}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, visitDate: e.target.value }))
               }
+              onBlur={() => markTouched("visitDate")}
+            />
+          </FormField>
+
+          <FormField
+            label="Name"
+            error={touched.name ? errors.name : undefined}
+            className="lg:col-span-3"
+          >
+            <input
+              className={inputClass}
+              placeholder="Full name"
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              onBlur={() => markTouched("name")}
+            />
+          </FormField>
+
+          <FormField
+            label="Phone (optional)"
+            error={touched.phone ? errors.phone : undefined}
+            className="lg:col-span-2"
+          >
+            <input
+              className={inputClass}
+              placeholder="10-digit phone"
+              value={form.phone}
+              onChange={(e) => {
+                const d = digitsOnly(e.target.value);
+                setForm((f) => ({ ...f, phone: formatPhoneUI(d) }));
+              }}
+              onBlur={() => markTouched("phone")}
+              inputMode="numeric"
+            />
+          </FormField>
+
+          <FormField label="Referred By" className="lg:col-span-3">
+            <ReferralComboBox value={referral} onChange={setReferral} />
+          </FormField>
+
+          {!hideDoctorField && (
+            <FormField
+              label={
+                <div className="flex items-center justify-between">
+                  <span>Consulting Doctor</span>
+                  <button
+                    type="button"
+                    className="text-sm text-blue-700 hover:text-blue-900"
+                    onClick={() => setShowAddDoctor(true)}
+                  >
+                    + Add Doctor
+                  </button>
+                </div>
+              }
+              error={touched.doctorId ? errors.doctorId : undefined}
+              className="lg:col-span-3"
             >
-              {submitting ? "Saving..." : isEdit ? "Save Changes" : "Register"}
-            </button>
-          </div>
-        </>
+              <select
+                className={selectClass}
+                value={form.doctorId}
+                onChange={(e) => {
+                  setForm((f) => ({ ...f, doctorId: Number(e.target.value) }));
+                  markTouched("doctorId");
+                }}
+                disabled={loadingDoctors}
+              >
+                {doctors.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.full_name}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          )}
+        </SectionCard>
+
+        {!isEdit ? (
+          <SectionCard
+            title="Payment Data"
+            className="bg-slate-200 text-black"
+            contentClassName="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"
+          >
+            <FormField
+              label="Choose Service"
+              error={touched.serviceId ? errors.serviceId : undefined}
+            >
+              <select
+                className={selectClass}
+                value={form.serviceId}
+                onChange={(e) => setService(Number(e.target.value))}
+                disabled={loadingServices}
+              >
+                {services.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.displayName} ({Number(s.rate || 0).toFixed(0)})
+                  </option>
+                ))}
+              </select>
+            </FormField>
+
+            <FormField
+              label="Amount to be paid"
+              error={touched.paidNowAmount ? errors.paidNowAmount : undefined}
+            >
+              <input
+                className={inputClass}
+                type="text"
+                inputMode="decimal"
+                placeholder={String(payable.toFixed(0))}
+                value={form.paidNowAmount}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    paidNowAmount: sanitizeDecimalInput(e.target.value, {
+                      maxIntDigits: 6,
+                      maxDecimals: 2,
+                      max: payable,
+                    }),
+                  }))
+                }
+                onBlur={() => markTouched("paidNowAmount")}
+                disabled={payable === 0}
+              />
+            </FormField>
+
+            <FormField
+              label="Payment Mode"
+              error={touched.paymentMode ? errors.paymentMode : undefined}
+            >
+              <select
+                className={selectClass}
+                value={form.paymentMode}
+                onChange={(e) => {
+                  setForm((f) => ({ ...f, paymentMode: e.target.value }));
+                  markTouched("paymentMode");
+                }}
+                disabled={loadingModes || paidNow === 0}
+              >
+                {paymentModes.map((m) => (
+                  <option key={m.code} value={m.code}>
+                    {m.display_name}
+                  </option>
+                ))}
+              </select>
+              {paidNow === 0 && (
+                <div className="mt-2 text-xs text-slate-600">
+                  (Payment mode not required when Amount to be paid is 0)
+                </div>
+              )}
+            </FormField>
+
+            <FormField
+              label="Discount / Waiver"
+              error={touched.discountAmount ? errors.discountAmount : undefined}
+            >
+              <input
+                className={inputClass}
+                type="text"
+                inputMode="decimal"
+                placeholder="0"
+                value={form.discountAmount}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    discountAmount: sanitizeDecimalInput(e.target.value, {
+                      maxIntDigits: 6,
+                      maxDecimals: 2,
+                      max: Number(f.rate || 0),
+                    }),
+                  }))
+                }
+                onBlur={() => markTouched("discountAmount")}
+              />
+            </FormField>
+
+            <FormField label="Remarks (optional)" className="lg:col-span-4">
+              <input
+                className={inputClass}
+                placeholder="Any notes..."
+                value={form.remarks}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, remarks: e.target.value }))
+                }
+              />
+            </FormField>
+          </SectionCard>
+        ) : (
+          <SectionCard
+            title="Payment Data"
+            className="bg-slate-200 text-black"
+            contentClassName="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"
+          >
+            <FormField
+              label="Consulting Fee"
+              error={touched.consultingFee ? errors.consultingFee : undefined}
+            >
+              <input
+                className={inputClass}
+                type="text"
+                inputMode="decimal"
+                placeholder="0"
+                value={form.consultingFee}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    consultingFee: sanitizeDecimalInput(e.target.value, {
+                      maxIntDigits: 6,
+                      maxDecimals: 2,
+                      max: 999999,
+                    }),
+                  }))
+                }
+                onBlur={() => markTouched("consultingFee")}
+              />
+            </FormField>
+
+            <FormField
+              label="Pay Status"
+              error={touched.payStatus ? errors.payStatus : undefined}
+            >
+              <select
+                className={selectClass}
+                value={form.payStatus}
+                onChange={(e) => {
+                  setForm((f) => ({
+                    ...f,
+                    payStatus: e.target.value as PayStatus,
+                  }));
+                  markTouched("payStatus");
+                }}
+              >
+                <option value="ACCEPTED">ACCEPTED</option>
+                <option value="PENDING">PENDING</option>
+                <option value="WAIVED">WAIVED</option>
+              </select>
+            </FormField>
+
+            <FormField
+              label="Payment Mode"
+              error={touched.paymentMode ? errors.paymentMode : undefined}
+            >
+              <select
+                className={selectClass}
+                value={form.paymentMode}
+                onChange={(e) => {
+                  setForm((f) => ({ ...f, paymentMode: e.target.value }));
+                  markTouched("paymentMode");
+                }}
+                disabled={loadingModes}
+              >
+                {paymentModes.map((m) => (
+                  <option key={m.code} value={m.code}>
+                    {m.display_name}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+
+            {loadingVisit && (
+              <div className="text-sm text-slate-600 lg:col-span-3">
+                Loading visit…
+              </div>
+            )}
+          </SectionCard>
+        )}
+      </div>
+
+      {prefillError && (
+        <div className="px-5 pb-3 text-sm text-red-700">{prefillError}</div>
       )}
+
+      {formError && (
+        <div className="px-5 pb-3 text-sm text-red-700">{formError}</div>
+      )}
+      {formSuccess && (
+        <div className="px-5 pb-3 text-sm text-green-700">{formSuccess}</div>
+      )}
+
+      <div className="border-t px-5 py-4 flex items-center justify-end gap-2">
+        {!isEdit && (
+          <button
+            className="rounded-lg border bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            onClick={() => setConfirmResetOpen(true)}
+            disabled={submitting}
+          >
+            Reset
+          </button>
+        )}
+
+        <button
+          className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+          onClick={submit}
+          disabled={
+            submitting ||
+            loadingDoctors ||
+            loadingModes ||
+            loadingServices ||
+            loadingVisit ||
+            !isValid
+          }
+        >
+          {submitting ? "Saving..." : isEdit ? "Save Changes" : "Register"}
+        </button>
+      </div>
+
       <AddDoctorModal
         open={showAddDoctor}
         onClose={() => setShowAddDoctor(false)}

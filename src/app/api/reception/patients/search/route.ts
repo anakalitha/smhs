@@ -67,6 +67,9 @@ export async function GET(req: Request) {
         ON rp.id = v.referralperson_id
 
       WHERE
+        p.organization_id = :org
+        AND p.branch_id = :branch
+        AND
         (
           p.patient_code = :exact
           OR p.patient_code LIKE :like

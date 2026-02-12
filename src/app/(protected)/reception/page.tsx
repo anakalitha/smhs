@@ -252,6 +252,7 @@ export default function ReceptionDashboard() {
         <VisitRegistrationForm
           mode="create"
           showFetch={true}
+          searchFirst={true}
           onSuccess={async () => {
             setRegisterOpen(false);
             await loadDashboard();
