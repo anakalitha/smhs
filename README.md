@@ -4,6 +4,3 @@ Hospital Management Software for SMNH
 This software is being developed for Dr. A.H.Shivabasavaswamy to manage his OPD patients.
 
 https://smhs-nu.vercel.app/login
-https://smhs-nu.vercel.app/login
-
-Github PAT = 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
