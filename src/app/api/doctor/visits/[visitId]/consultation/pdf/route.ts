@@ -17,17 +17,13 @@ type Ctx = { params: Promise<{ visitId: string }> };
 
 type UserLike = { roles?: string[] } | null | undefined;
 
-function mustBeDoctor(me: UserLike) {
-  const roles = me?.roles ?? [];
+function canViewPdf(me: { roles: string[] }) {
   return (
-    roles.includes("DOCTOR") ||
-    roles.includes("ADMIN") ||
-    roles.includes("SUPER_ADMIN")
+    me.roles.includes("DOCTOR") ||
+    me.roles.includes("RECEPTION") ||
+    me.roles.includes("ADMIN") ||
+    me.roles.includes("SUPER_ADMIN")
   );
-}
-
-function isAdmin(me: { roles: string[] }) {
-  return me.roles.includes("ADMIN") || me.roles.includes("SUPER_ADMIN");
 }
 
 function fmtDDMMYYYY(dateYmd: string): string {
@@ -144,13 +140,32 @@ function loadLogoBytes(): Uint8Array | null {
   return null;
 }
 
+function canReadConsultationPdf(me: { roles: string[] }) {
+  return (
+    me.roles.includes("DOCTOR") ||
+    me.roles.includes("RECEPTION") ||
+    me.roles.includes("ADMIN") ||
+    me.roles.includes("SUPER_ADMIN")
+  );
+}
+
+function isAdmin(me: { roles: string[] }) {
+  return me.roles.includes("ADMIN") || me.roles.includes("SUPER_ADMIN");
+}
+
+function isDoctor(me: { roles: string[] }) {
+  return me.roles.includes("DOCTOR");
+}
+
 type LogoImg = { width: number; height: number; embed: PDFImage };
 
 export async function GET(req: Request, ctx: Ctx) {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!mustBeDoctor(me))
+
+  if (!canReadConsultationPdf(me)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   const { visitId } = await ctx.params;
   const id = Number(visitId);
@@ -161,22 +176,21 @@ export async function GET(req: Request, ctx: Ctx) {
   const orgId = me.organizationId != null ? Number(me.organizationId) : NaN;
   const branchId = me.branchId != null ? Number(me.branchId) : NaN;
   if (!Number.isFinite(orgId) || !Number.isFinite(branchId)) {
-    return NextResponse.json(
-      { error: "Invalid org/branch in session." },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Invalid org/branch in session." }, { status: 400 });
   }
 
   const admin = isAdmin(me);
-  const doctorId = admin
-    ? null
-    : await resolveDoctorIdForUser({ userId: me.id, orgId, branchId });
 
-  if (!admin && !doctorId) {
-    return NextResponse.json(
-      { error: "Doctor account not linked to doctor profile." },
-      { status: 400 }
-    );
+  // ✅ Only DOCTOR users need doctor-profile resolution + ownership check
+  let doctorId: number | null = null;
+  if (!admin && isDoctor(me)) {
+    doctorId = await resolveDoctorIdForUser({ userId: me.id, orgId, branchId });
+    if (!doctorId) {
+      return NextResponse.json(
+        { error: "Doctor account not linked to doctor profile." },
+        { status: 400 }
+      );
+    }
   }
 
   // Header: branch details for letterhead (client requirement)
@@ -235,9 +249,10 @@ export async function GET(req: Request, ctx: Ctx) {
     return NextResponse.json({ error: "Visit not found." }, { status: 404 });
   }
 
-  if (!admin && Number(vRows[0].doctorId) !== doctorId) {
-    return NextResponse.json({ error: "Forbidden." }, { status: 403 });
-  }
+// After loading the visit row:
+if (doctorId != null && Number(vRows[0].doctor_id) !== doctorId) {
+  return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+}
 
   const visit = {
     visitId: Number(vRows[0].visitId),

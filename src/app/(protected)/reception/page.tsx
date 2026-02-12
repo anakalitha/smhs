@@ -198,9 +198,17 @@ export default function ReceptionDashboard() {
                         onClick: () => openEditModal(row.visitId),
                       },
                       {
-                        label: "View Patient Data",
+                        label: "Patient Summary (Billing)",
+                        onClick: () => router.push(`/reception/patients/${row.patientId}`),
+                      },
+                      {
+                        label: "Reprint Consultation PDF",
                         onClick: () =>
-                          router.push(`/patients/${row.patientId}`),
+                          window.open(
+                            `/api/doctor/visits/${row.visitId}/consultation/pdf`,
+                            "_blank",
+                            "noopener,noreferrer"
+                          ),
                       },
                       {
                         label: "Generate Bill",
@@ -228,7 +236,7 @@ export default function ReceptionDashboard() {
         {/* Patient Lookup */}
         <PatientLookupTableCard
           refreshKey={patientLookupRefreshKey}
-          onViewPatient={(patientId) => router.push(`/patients/${patientId}`)}
+          onViewPatient={(patientId) => router.push(`/reception/patients/${patientId}`)}
         />
       </div>
 

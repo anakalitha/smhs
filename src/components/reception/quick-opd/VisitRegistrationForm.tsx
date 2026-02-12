@@ -736,7 +736,6 @@ export default function VisitRegistrationForm({
         const q = prefillQuery.trim();
         const kind = classifySearchInput(q);
 
-        // Search-first flow: move to empty registration form automatically
         if (!isEdit && searchFirst) {
           setExistingPatientCode("");
           setForm((f) => ({
@@ -746,9 +745,7 @@ export default function VisitRegistrationForm({
           }));
 
           setReferral(null);
-          setSearchBanner(
-            `No existing patient found for "${q}". Registering a new patient.`
-          );
+          setSearchBanner(`No existing patient found for "${q}". Registering a new patient.`);
           setStage("form");
           setPrefillQuery("");
           setPrefillHits([]);
@@ -824,7 +821,7 @@ export default function VisitRegistrationForm({
         </div>
 
         {/* Search toolbar (only when NOT search-first, or when search-first and still in search stage) */}
-        {showFetch && !isEdit && (!searchFirst || stage === "search") && (
+        {showFetch && !isEdit && (
           <div className="flex items-center gap-2">
             <input
               className={inputClass}
