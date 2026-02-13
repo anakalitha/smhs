@@ -40,7 +40,12 @@ function permissionsFor(me: { roles: string[] }) {
     "RECEPTION",
   ]); // reception read-only ok
   const canEditClinical = hasAnyRole(me, ["DOCTOR", "ADMIN", "SUPER_ADMIN"]);
-  const canViewBilling = hasAnyRole(me, ["RECEPTION", "ADMIN", "SUPER_ADMIN"]);
+  const canViewBilling = hasAnyRole(me, [
+  "DOCTOR",
+  "RECEPTION",
+  "ADMIN",
+  "SUPER_ADMIN",
+]);
   return { canEditPatient, canViewClinical, canEditClinical, canViewBilling };
 }
 
@@ -60,6 +65,7 @@ type VisitRow = RowDataPacket & {
   queueStatus: "WAITING" | "NEXT" | "IN_ROOM" | "COMPLETED" | null;
 
   consultationPaymentModeCode: string | null;
+  consultationPayStatus: "ACCEPTED" | "PENDING" | "WAIVED" | "CANCELLED" | null;
 
   diagnosis: string | null;
   hasPrescription: number; // 0/1
@@ -101,9 +107,11 @@ export async function GET(_req: Request, ctx: Ctx) {
     SELECT id, patient_code, full_name, phone
     FROM patients
     WHERE patient_code = :code
-    LIMIT 1
+  AND organization_id = :orgId
+  AND branch_id = :branchId
+LIMIT 1
     `,
-    { code }
+    { code, orgId, branchId }
   );
 
   if (pRows.length === 0) {
@@ -167,7 +175,9 @@ export async function GET(_req: Request, ctx: Ctx) {
           : "0 AS hasPrescription,"
       }
 
-      pay_cons.payment_mode_code AS consultationPaymentModeCode
+      pay_cons.payment_mode_code AS consultationPaymentModeCode,
+      pay_cons.pay_status AS consultationPayStatus
+
 
     FROM visits v
     LEFT JOIN queue_entries q ON q.visit_id = v.id
@@ -235,6 +245,7 @@ export async function GET(_req: Request, ctx: Ctx) {
       tokenNo: r.tokenNo != null ? Number(r.tokenNo) : null,
       queueStatus: r.queueStatus,
       consultationPaymentModeCode: r.consultationPaymentModeCode ?? null,
+      consultationPayStatus: r.consultationPayStatus ?? null,
       ...(perms.canViewClinical
         ? { diagnosis: r.diagnosis, hasPrescription: !!r.hasPrescription }
         : {}),

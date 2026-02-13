@@ -224,7 +224,6 @@ function toPayStatusFromCharge(
 ): PayStatus {
   const net = Number(netAmount) || 0;
   const pending = Number(pendingAmount) || 0;
-
   if (net <= 0) return "WAIVED";
   if (pending > 0) return "PENDING";
   return "ACCEPTED";
@@ -273,16 +272,23 @@ export default function PatientSummaryClient({
   const activeVisitId = useMemo(() => {
     if (!visits.length) return null;
 
-    const d = new Date();
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    const today = `${yyyy}-${mm}-${dd}`;
+    const today = new Date().toISOString().slice(0, 10);
 
-    const todayVisit = visits.find(
-      (vv) => String(vv.visitDate).slice(0, 10) === today
-    );
-    return todayVisit?.visitId ?? visits[0]?.visitId ?? null;
+    const todayVisits = visits.filter((v) => String(v.visitDate).slice(0, 10) === today);
+    if (todayVisits.length) {
+      // choose latest visitId among today's visits
+      return todayVisits.reduce((mx, v) => (v.visitId > mx ? v.visitId : mx), todayVisits[0].visitId);
+    }
+
+    // otherwise choose latest by date, then id
+    const sorted = [...visits].sort((a, b) => {
+      const ad = String(a.visitDate).slice(0, 10);
+      const bd = String(b.visitDate).slice(0, 10);
+      if (ad !== bd) return bd.localeCompare(ad); // newer first
+      return (b.visitId ?? 0) - (a.visitId ?? 0);
+    });
+
+    return sorted[0]?.visitId ?? null;
   }, [visits]);
 
   // Show historical visits only in the Visits table (exclude the active/current visit)
@@ -387,7 +393,12 @@ export default function PatientSummaryClient({
             }
           }
 
-          const payStatus = toPayStatusFromCharge(netAmount, pendingAmount);
+          const computed = toPayStatusFromCharge(netAmount, pendingAmount);
+          const payStatus =
+            (netAmount > 0 || paidAmount > 0 || pendingAmount > 0)
+              ? computed
+              : ((v as any).consultationPayStatus as PayStatus) ?? computed;
+
           const paymentMode = (
             v.consultationPaymentModeCode ?? "—"
           ).toUpperCase();

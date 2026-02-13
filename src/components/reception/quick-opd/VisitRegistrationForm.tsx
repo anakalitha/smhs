@@ -215,6 +215,13 @@ export default function VisitRegistrationForm({
   hideDoctorField = false,
 }: Props) {
   const isEdit = mode === "edit";
+  const [editPermissions, setEditPermissions] = useState<{
+    canEditPayment: boolean;
+    canEditVisitDate: boolean;
+  }>({ canEditPayment: true, canEditVisitDate: true });
+
+  const lockPayment = isEdit && !editPermissions.canEditPayment;
+  const lockVisitDate = isEdit && !editPermissions.canEditVisitDate;
 
   const [stage, setStage] = useState<"search" | "form">(
     !isEdit && searchFirst ? "search" : "form"
@@ -363,16 +370,19 @@ export default function VisitRegistrationForm({
         if (pn > 0 && !next.paymentMode) e.paymentMode = "Select payment mode.";
       } else {
         // Edit mode validations
-        const fee = toNum(next.consultingFee || "0");
-        if (!Number.isFinite(fee) || fee < 0) e.consultingFee = "Invalid fee.";
-        if (!next.paymentMode) e.paymentMode = "Select payment mode.";
-        if (!["ACCEPTED", "PENDING", "WAIVED"].includes(next.payStatus))
-          e.payStatus = "Invalid pay status.";
+        // (Reception: payment section is locked, so we skip validating payment inputs)
+        if (!lockPayment) {
+          const fee = toNum(next.consultingFee || "0");
+          if (!Number.isFinite(fee) || fee < 0) e.consultingFee = "Invalid fee.";
+          if (!next.paymentMode) e.paymentMode = "Select payment mode.";
+          if (!["ACCEPTED", "PENDING", "WAIVED"].includes(next.payStatus))
+            e.payStatus = "Invalid pay status.";
+        }
       }
 
       return e;
     },
-    [isEdit]
+    [isEdit, lockPayment]
   );
 
   const isValid = useMemo(
@@ -491,6 +501,14 @@ export default function VisitRegistrationForm({
         const v = data.visit || {};
         const p = data.patient || {};
         const pay = data.payment || {};
+        const perms = (data.permissions || {}) as Partial<{
+          canEditPayment: boolean;
+          canEditVisitDate: boolean;
+        }>;
+        setEditPermissions({
+          canEditPayment: perms.canEditPayment ?? true,
+          canEditVisitDate: perms.canEditVisitDate ?? true,
+        });
 
         // referral: allow either {id,name} or direct fields
         const referralId =
@@ -815,7 +833,7 @@ export default function VisitRegistrationForm({
             {isEdit
               ? "Update patient details and payment status."
               : searchFirst
-              ? "Search existing patients first. If none found, continue to register."
+              ? "Search existing patients first. If none found, enter `NEW` or `9999` and continue to register."
               : "Enter patient details and payment details."}
           </div>
         </div>
@@ -891,6 +909,7 @@ export default function VisitRegistrationForm({
                     setForm((f) => ({ ...f, visitDate: e.target.value }))
                   }
                   onBlur={() => markTouched("visitDate")}
+                  disabled={lockVisitDate}
                 />
               </FormField>
 
@@ -941,6 +960,7 @@ export default function VisitRegistrationForm({
                         type="button"
                         className="text-sm text-blue-700 hover:text-blue-900"
                         onClick={() => setShowAddDoctor(true)}
+                        disabled={lockPayment}
                       >
                         + Add Doctor
                       </button>
@@ -959,7 +979,7 @@ export default function VisitRegistrationForm({
                       }));
                       markTouched("doctorId");
                     }}
-                    disabled={loadingDoctors}
+                    disabled={loadingDoctors || lockPayment}
                   >
                     {doctors.map((d) => (
                       <option key={d.id} value={d.id}>
@@ -985,7 +1005,7 @@ export default function VisitRegistrationForm({
                     className={selectClass}
                     value={form.serviceId}
                     onChange={(e) => setService(Number(e.target.value))}
-                    disabled={loadingServices}
+                    disabled={loadingServices || lockPayment}
                   >
                     {services.map((s) => (
                       <option key={s.id} value={s.id}>
@@ -1091,6 +1111,12 @@ export default function VisitRegistrationForm({
                 className="bg-slate-200 text-black"
                 contentClassName="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"
               >
+                {lockPayment && (
+                  <div className="lg:col-span-4 text-xs text-slate-700">
+                    Payment editing is disabled for your role. Please contact Admin for payment changes.
+                  </div>
+                )}
+
                 <FormField
                   label="Consulting Fee"
                   error={
@@ -1114,6 +1140,7 @@ export default function VisitRegistrationForm({
                       }))
                     }
                     onBlur={() => markTouched("consultingFee")}
+                    disabled={lockPayment}
                   />
                 </FormField>
 
@@ -1131,6 +1158,7 @@ export default function VisitRegistrationForm({
                       }));
                       markTouched("payStatus");
                     }}
+                    disabled={lockPayment}
                   >
                     <option value="ACCEPTED">ACCEPTED</option>
                     <option value="PENDING">PENDING</option>
@@ -1149,7 +1177,7 @@ export default function VisitRegistrationForm({
                       setForm((f) => ({ ...f, paymentMode: e.target.value }));
                       markTouched("paymentMode");
                     }}
-                    disabled={loadingModes}
+                    disabled={loadingModes || lockPayment}
                   >
                     {paymentModes.map((m) => (
                       <option key={m.code} value={m.code}>

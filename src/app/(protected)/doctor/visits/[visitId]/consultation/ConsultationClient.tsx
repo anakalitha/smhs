@@ -43,6 +43,25 @@ type LoadedData = {
     status: "ORDERED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
     createdAt: string;
   }>;
+  feeComponents?: Array<{
+    serviceId: number;
+    code: string;
+    displayName: string;
+    grossAmount: number;
+    discountAmount: number;
+    netAmount: number;
+  }>;
+
+  chargeAdjustments?: Array<{
+    serviceId: number;
+    oldGrossAmount: number;
+    oldDiscountAmount: number;
+    oldNetAmount: number;
+    newDiscountAmount: number;
+    newNetAmount: number;
+    reason: string;
+    createdAt: string;
+  }>;
 };
 
 // New UI model (kept compatible with existing DB schema)
@@ -185,6 +204,13 @@ function blankRxItem(sortOrder: number): RxItem {
   };
 }
 
+function appendNote(details: string, label: string, note: string) {
+  const n = (note || "").trim();
+  if (!n) return details || "";
+  const base = (details || "").trim();
+  return (base ? base + "\n" : "") + `${label}: ${n}`;
+}
+
 export default function ConsultationClient({
   visitId,
   embedded = false,
@@ -223,6 +249,47 @@ export default function ConsultationClient({
 
   const [rxItems, setRxItems] = useState<RxItem[]>([]);
   const [admit, setAdmit] = useState(false);
+
+// Consultation fee adjustment (only)
+const [consultAdjEnabled, setConsultAdjEnabled] = useState(false);
+const [consultWaive, setConsultWaive] = useState(false);
+const [consultMode, setConsultMode] = useState<"PERCENT" | "AMOUNT">("PERCENT");
+const [consultPercent, setConsultPercent] = useState("");
+const [consultAmount, setConsultAmount] = useState("");
+const [consultReason, setConsultReason] = useState("");
+
+// Order-level “notes” (stored inside details text)
+const [scanDiscountNote, setScanDiscountNote] = useState("");
+const [papDiscountNote, setPapDiscountNote] = useState("");
+const [ctgDiscountNote, setCtgDiscountNote] = useState("");
+const [labDiscountNote, setLabDiscountNote] = useState("");
+
+// Pharmacy note (stored inside prescription notes)
+const [pharmaDiscountNote, setPharmaDiscountNote] = useState("");
+
+type ChargeAdjustmentDraft = {
+  serviceId: number | "";
+  mode: "PERCENT" | "AMOUNT";
+  percent: string;
+  amount: string;
+  waive: boolean;
+  reason: string;
+};
+
+function blankAdj(): ChargeAdjustmentDraft {
+  return { serviceId: "", mode: "PERCENT", percent: "", amount: "", waive: false, reason: "" };
+}
+
+function num(v: string) {
+  const x = Number((v || "").trim());
+  return Number.isFinite(x) ? x : 0;
+}
+function to2(n: number) {
+  return Math.round(n * 100) / 100;
+}
+
+  const [feeComponents, setFeeComponents] = useState<LoadedData["feeComponents"]>([]);
+  const [adjDrafts, setAdjDrafts] = useState<ChargeAdjustmentDraft[]>([blankAdj()]);
 
   function hydrate(data: LoadedData) {
     setVisit({
@@ -295,6 +362,27 @@ export default function ConsultationClient({
     } else {
       setRxItems(mapped);
     }
+
+    setFeeComponents(Array.isArray(data.feeComponents) ? data.feeComponents : []);
+
+    const latest = Array.isArray(data.chargeAdjustments) ? data.chargeAdjustments : [];
+    if (latest.length) {
+      setAdjDrafts(
+        latest.map((a) => {
+          const waived = Number(a.newNetAmount) === 0 && Number(a.newDiscountAmount) >= Number(a.oldGrossAmount);
+          const discountOff = to2(Number(a.oldNetAmount) - Number(a.newNetAmount));
+          return {
+            serviceId: a.serviceId,
+            mode: "AMOUNT",
+            percent: "",
+            amount: waived ? "" : String(discountOff),
+            waive: waived,
+            reason: a.reason || "",
+          };
+        })
+      );
+    }
+
   }
 
   async function load() {
@@ -345,13 +433,13 @@ export default function ConsultationClient({
       remarks,
       admit,
       orders: {
-        scan: { needed: scanNeeded, details: scanDetails },
-        pap: { needed: papNeeded, details: papDetails },
-        ctg: { needed: ctgNeeded, details: ctgDetails },
-        lab: { needed: labNeeded, details: labDetails },
+        scan: { needed: scanNeeded, details: appendNote(scanDetails, "Discount note", scanDiscountNote) },
+        pap: { needed: papNeeded, details: appendNote(papDetails, "Discount note", papDiscountNote), },
+        ctg: { needed: ctgNeeded, details: appendNote(ctgDetails, "Discount note", ctgDiscountNote), },
+        lab: { needed: labNeeded, details: appendNote(labDetails, "Discount note", labDiscountNote), },
       },
       prescription: {
-        notes: rxNotes,
+        notes: appendNote(rxNotes, "Pharmacy discount note", pharmaDiscountNote),
         items: rxItems.map((it, idx) => {
           const m = toNumStr(it.morningDose);
           const a = toNumStr(it.afternoonDose);
@@ -385,6 +473,19 @@ export default function ConsultationClient({
           };
         }),
       },
+chargeAdjustments: consultAdjEnabled
+  ? [
+      {
+        // We'll resolve serviceId for consultation in backend OR from feeComponents if present
+        serviceId: 0, // backend will map 0 => Consultation service of this org
+        waive: consultWaive,
+        mode: consultMode,
+        percent: consultMode === "PERCENT" ? Number(consultPercent || 0) : null,
+        amount: consultMode === "AMOUNT" ? Number(consultAmount || 0) : null,
+        reason: (consultReason || "").trim() || null,
+      },
+    ]
+  : [],
     };
   }, [
     diagnosis,
@@ -402,6 +503,16 @@ export default function ConsultationClient({
     labDetails,
     rxNotes,
     rxItems,
+  pharmaDiscountNote,
+
+  rxItems,
+
+  consultAdjEnabled,
+  consultWaive,
+  consultMode,
+  consultPercent,
+  consultAmount,
+  consultReason,
   ]);
 
   async function saveOnly(): Promise<boolean> {
@@ -668,6 +779,45 @@ export default function ConsultationClient({
           </div>
         </div>
 
+<div className="rounded-2xl border bg-white shadow-sm p-5 space-y-3">
+  <Toggle label="Consultation fee waiver/discount" checked={consultAdjEnabled} onChange={setConsultAdjEnabled} />
+
+  {consultAdjEnabled && (
+    <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+      <div className="md:col-span-2">
+        <label className="text-xs font-medium text-slate-700">Waive</label>
+        <div className="flex items-center gap-2">
+          <input type="checkbox" checked={consultWaive} onChange={(e) => setConsultWaive(e.target.checked)} />
+          <span className="text-sm text-slate-700">Make ₹0</span>
+        </div>
+      </div>
+
+      <div className="md:col-span-2">
+        <label className="text-xs font-medium text-slate-700">Mode</label>
+        <select className={inputCls()} value={consultMode} disabled={consultWaive} onChange={(e) => setConsultMode(e.target.value === "PERCENT" ? "PERCENT" : "AMOUNT")}>
+          <option value="PERCENT">%</option>
+          <option value="AMOUNT">Amount</option>
+        </select>
+      </div>
+
+      <div className="md:col-span-3">
+        <label className="text-xs font-medium text-slate-700">Discount %</label>
+        <input className={inputCls()} value={consultPercent} disabled={consultWaive || consultMode !== "PERCENT"} onChange={(e) => setConsultPercent(e.target.value)} placeholder="e.g. 10" />
+      </div>
+
+      <div className="md:col-span-3">
+        <label className="text-xs font-medium text-slate-700">Discount amount</label>
+        <input className={inputCls()} value={consultAmount} disabled={consultWaive || consultMode !== "AMOUNT"} onChange={(e) => setConsultAmount(e.target.value)} placeholder="e.g. 50" />
+      </div>
+
+      <div className="md:col-span-12">
+        <label className="text-xs font-medium text-slate-700">Reason (optional)</label>
+        <input className={inputCls()} value={consultReason} onChange={(e) => setConsultReason(e.target.value)} placeholder="Follow-up / special case / staff..." />
+      </div>
+    </div>
+  )}
+</div>
+
         {/* Orders (unchanged layout) */}
         <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-4">
           <div className="text-sm font-semibold text-slate-900">Orders</div>
@@ -686,6 +836,14 @@ export default function ConsultationClient({
                 onChange={(e) => setScanDetails(e.target.value)}
                 disabled={!scanNeeded}
               />
+              <textarea
+                className={textAreaClsSmall()}
+                placeholder="Scan Discount/Waiver note (optional)"
+                value={scanDiscountNote}
+                onChange={(e) => setScanDiscountNote(e.target.value)}
+                disabled={!scanNeeded}
+              />
+
             </div>
 
             <div className="rounded-xl border bg-slate-50 p-3">
@@ -701,6 +859,13 @@ export default function ConsultationClient({
                 onChange={(e) => setPapDetails(e.target.value)}
                 disabled={!papNeeded}
               />
+              <textarea
+                className={textAreaClsSmall()}
+                placeholder="PAP Smear note (optional)"
+                value={papDiscountNote}
+                onChange={(e) => setPapDiscountNote(e.target.value)}
+                disabled={!papNeeded}
+              />
             </div>
 
             <div className="rounded-xl border bg-slate-50 p-3">
@@ -710,6 +875,13 @@ export default function ConsultationClient({
                 placeholder="CTG details"
                 value={ctgDetails}
                 onChange={(e) => setCtgDetails(e.target.value)}
+                disabled={!ctgNeeded}
+              />
+              <textarea
+                className={textAreaClsSmall()}
+                placeholder="CTG Discount/Waiver note (optional)"
+                value={ctgDiscountNote}
+                onChange={(e) => setCtgDiscountNote(e.target.value)}
                 disabled={!ctgNeeded}
               />
             </div>
@@ -727,8 +899,24 @@ export default function ConsultationClient({
                 onChange={(e) => setLabDetails(e.target.value)}
                 disabled={!labNeeded}
               />
+              <textarea
+                className={textAreaClsSmall()}
+                placeholder="Lab Test Discount/Waiver note (optional)"
+                value={labDiscountNote}
+                onChange={(e) => setLabDiscountNote(e.target.value)}
+                disabled={!labNeeded}
+              />
             </div>
           </div>
+        </div>
+        <div className="rounded-xl border bg-slate-50 p-3">
+          <div className="text-sm font-medium text-slate-700 mb-2">Pharmacy discount note</div>
+          <textarea
+            className={textAreaClsMedium()}
+            placeholder='e.g. "Provide 10% discount on medicines purchased"'
+            value={pharmaDiscountNote}
+            onChange={(e) => setPharmaDiscountNote(e.target.value)}
+          />
         </div>
 
         {/* Prescription (table redesigned) */}
@@ -966,6 +1154,7 @@ export default function ConsultationClient({
             </button>
           </div>
         </div>
+
       </div>
     </div>
   );

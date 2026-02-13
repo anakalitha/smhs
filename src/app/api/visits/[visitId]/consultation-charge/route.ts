@@ -1,3 +1,4 @@
+// src/app/api/visits/[visitId]/consultation-charge/route.ts
 import { NextResponse } from "next/server";
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db";
@@ -18,9 +19,11 @@ type ChargeRow = RowDataPacket & {
 };
 type PaidRow = RowDataPacket & { paid: number };
 
-function mustBeReceptionOrAdmin(me: { roles?: string[] } | null) {
+// ✅ allow DOCTOR too (this endpoint is used in Doctor Patient Summary)
+function mustBeStaff(me: { roles?: string[] } | null) {
   const roles = me?.roles ?? [];
   return (
+    roles.includes("DOCTOR") ||
     roles.includes("RECEPTION") ||
     roles.includes("ADMIN") ||
     roles.includes("SUPER_ADMIN")
@@ -33,7 +36,7 @@ export async function GET(
 ) {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!mustBeReceptionOrAdmin(me))
+  if (!mustBeStaff(me))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   if (!me.organizationId || !me.branchId) {
@@ -54,7 +57,12 @@ export async function GET(
     const branchId = Number(me.branchId);
 
     const [svc] = await conn.execute<SvcRow[]>(
-      `SELECT id FROM services WHERE organization_id = :org_id AND code='CONSULTATION' AND is_active=1 LIMIT 1`,
+      `SELECT id
+       FROM services
+       WHERE organization_id = :org_id
+         AND code='CONSULTATION'
+         AND is_active=1
+       LIMIT 1`,
       { org_id: orgId }
     );
     if (svc.length === 0)
@@ -93,7 +101,8 @@ export async function GET(
         COALESCE(SUM(discount_amount),0) AS discount,
         COALESCE(SUM(net_amount),0) AS net
       FROM visit_charges
-      WHERE visit_id = :visit_id AND service_id = :service_id
+      WHERE visit_id = :visit_id
+        AND service_id = :service_id
       `,
       { visit_id, service_id: serviceId }
     );
@@ -104,15 +113,21 @@ export async function GET(
 
     const [paidRows] = await conn.execute<PaidRow[]>(
       `
-      SELECT COALESCE(SUM(pa.amount),0) AS paid
-      FROM payment_allocations pa
-      WHERE pa.visit_id = :visit_id AND pa.service_id = :service_id
+SELECT COALESCE(SUM(pa.amount),0) AS paid
+FROM payment_allocations pa
+JOIN payments p ON p.id = pa.payment_id
+WHERE pa.visit_id = :visit_id
+  AND pa.service_id = :service_id
+  AND p.direction = 'PAYMENT'
+  AND p.pay_status = 'ACCEPTED'
       `,
       { visit_id, service_id: serviceId }
     );
+
     const paid = Number(paidRows[0]?.paid ?? 0);
     const pending = Math.max(0, net - paid);
 
+    // ✅ Return in the shape PatientSummaryClient expects
     return NextResponse.json({
       ok: true,
       visit: {
@@ -122,7 +137,18 @@ export async function GET(
         patientName: String(hdr[0].patient_name),
         doctorName: hdr[0].doctor_name ? String(hdr[0].doctor_name) : null,
       },
-      charge: { gross, discount, net, paid, pending },
+      charge: {
+        visitId: Number(hdr[0].visit_id),
+        netAmount: net,
+        paidAmount: paid,
+        pendingAmount: pending,
+
+        // optional extras (safe to keep)
+        gross,
+        discount,
+      },
+      // optional: keep refund shape for future use
+      refund: null,
     });
   } catch (e) {
     console.error("❌ consultation-charge GET failed:", e);

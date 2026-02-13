@@ -26,6 +26,11 @@ function canViewPdf(me: { roles: string[] }) {
   );
 }
 
+function sanitizePdfText(v: string) {
+  // WinAnsi fonts can't encode ₹, so replace it.
+  return (v || "").replace(/₹/g, "Rs.");
+}
+
 function fmtDDMMYYYY(dateYmd: string): string {
   // expects "YYYY-MM-DD"
   const m = dateYmd.match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -250,7 +255,7 @@ export async function GET(req: Request, ctx: Ctx) {
   }
 
 // After loading the visit row:
-if (doctorId != null && Number(vRows[0].doctor_id) !== doctorId) {
+if (doctorId != null && Number(vRows[0].doctorId) !== doctorId) {
   return NextResponse.json({ error: "Forbidden." }, { status: 403 });
 }
 
@@ -292,6 +297,69 @@ if (doctorId != null && Number(vRows[0].doctor_id) !== doctorId) {
     { visitId: id }
   );
   const note = noteRows[0] ?? null;
+
+  const [feeRows] = await db.execute<RowDataPacket[]>(
+    `
+    SELECT
+      vc.service_id AS serviceId,
+      s.display_name AS displayName,
+      vc.gross_amount AS grossAmount,
+      vc.discount_amount AS discountAmount,
+      vc.net_amount AS netAmount
+    FROM visit_charges vc
+    JOIN services s ON s.id = vc.service_id
+    WHERE vc.visit_id = :visitId
+      AND s.organization_id = :org
+      AND s.is_active = 1
+    ORDER BY s.display_name ASC
+    `,
+    { visitId: id, org: orgId }
+  );
+
+  const [adjRows] = await db.execute<RowDataPacket[]>(
+    `
+    SELECT a.service_id AS serviceId,
+           a.new_discount_amount AS newDiscountAmount,
+           a.new_net_amount AS newNetAmount,
+           a.reason,
+           a.created_at AS createdAt
+    FROM consultation_charge_adjustments a
+    JOIN (
+      SELECT service_id, MAX(created_at) AS max_created_at
+      FROM consultation_charge_adjustments
+      WHERE visit_id = :visitId
+      GROUP BY service_id
+    ) x ON x.service_id = a.service_id AND x.max_created_at = a.created_at
+    WHERE a.visit_id = :visitId
+    `,
+    { visitId: id }
+  );
+
+  const adjMap = new Map<number, { newDiscount: number; newNet: number; reason: string }>();
+  for (const r of adjRows) {
+    adjMap.set(Number(r.serviceId), {
+      newDiscount: Number(r.newDiscountAmount),
+      newNet: Number(r.newNetAmount),
+      reason: safeStr(r.reason),
+    });
+  }
+
+  const feeLines = feeRows.map((r) => {
+    const serviceId = Number(r.serviceId);
+    const oldNet = Number(r.netAmount);
+    const a = adjMap.get(serviceId);
+    const adjustedNet = a ? Number(a.newNet) : oldNet;
+    const discountOff = a ? Math.max(0, Number(r.netAmount) - adjustedNet) : 0;
+
+    return {
+      serviceName: safeStr(r.displayName),
+      oldNet,
+      adjustedNet,
+      discountOff,
+      reason: a?.reason || "",
+      hasAdj: !!a,
+    };
+  }).filter((x) => x.hasAdj);
 
   // Orders
   const [orderRows] = await db.execute<RowDataPacket[]>(
@@ -384,7 +452,8 @@ if (doctorId != null && Number(vRows[0].doctor_id) !== doctorId) {
       ? rgb(opts.color.r, opts.color.g, opts.color.b)
       : rgb(0, 0, 0);
 
-    page.drawText((text ?? "").toString(), {
+    page.drawText(sanitizePdfText((text ?? "").toString()), {
+
       x,
       y: yPos,
       size,
@@ -399,7 +468,9 @@ if (doctorId != null && Number(vRows[0].doctor_id) !== doctorId) {
     size: number,
     fnt: PDFFont
   ) {
-    const words = (text ?? "").toString().trim().split(/\s+/).filter(Boolean);
+    const cleaned = sanitizePdfText((text ?? "").toString());
+const words = cleaned.trim().split(/\s+/).filter(Boolean);
+
     const lines: string[] = [];
     let line = "";
     for (const w of words) {
@@ -602,18 +673,18 @@ if (doctorId != null && Number(vRows[0].doctor_id) !== doctorId) {
   });
 
   // Row 4 (Admission advised)
-  const row4Y = row3Y - rowH;
-  drawLabelValueRow({
-    x: boxX,
-    y: row4Y,
-    label: "Visit Type:",
-    value: String(visitCount || 1),
-    labelW: 85,
-    valueW: boxW - 85,
-    h: rowH,
-  });
+  // const row4Y = row3Y - rowH;
+  // drawLabelValueRow({
+  //   x: boxX,
+  //   y: row4Y,
+  //   label: "Visit Type:",
+  //   value: String(visitCount || 1),
+  //   labelW: 85,
+  //   valueW: boxW - 85,
+  //   h: rowH,
+  // });
 
-  y = row4Y - rowH - 24;
+  y = row3Y - rowH - 24;
 
   // ===== Sections =====
   function drawSection(label: string, value: string) {
@@ -662,9 +733,31 @@ if (doctorId != null && Number(vRows[0].doctor_id) !== doctorId) {
   drawSection("Treatment:", safeStr(note?.treatment));
   drawSection("Consultation Remarks:", safeStr(note?.remarks));
 
+  // Waiver/Discount section
+  if (feeLines.length) {
+    drawText("Waiver / Discount:", marginX, y, { bold: true, size: 10.5 });
+    y -= 18;
+
+    for (const f of feeLines) {
+      const line = `${f.serviceName} | Original Rs.${f.oldNet.toFixed(2)} | Adjusted Rs.${f.adjustedNet.toFixed(2)} | Off Rs.${f.discountOff.toFixed(2)}`;
+
+      const lines = wrapText(line, width - marginX * 2, 10.5, font);
+      for (const ln of lines.slice(0, 2)) {
+        drawText(ln, marginX + 10, y, { size: 10.5 });
+        y -= 13;
+      }
+      if (f.reason) {
+        const rLines = wrapText(`Reason: ${f.reason}`, width - marginX * 2 - 10, 10.5, font);
+        drawText(rLines[0], marginX + 10, y, { size: 10.5 });
+        y -= 13;
+      }
+      y -= 6;
+    }
+  }
+
   // Orders section (compact)
   drawText("Orders:", marginX, y, { bold: true, size: 10.5 });
-  let ordersLineY = y - 14;
+  let ordersLineY = y - 18;
 
   if (orderRows.length === 0) {
     drawText("—", marginX + 10, ordersLineY, { size: 10.5 });
@@ -673,18 +766,28 @@ if (doctorId != null && Number(vRows[0].doctor_id) !== doctorId) {
     for (const o of orderRows) {
       const code = safeStr(o.service_code);
       const title = code === "PAP" ? "PAP Smear" : code;
-      const details = safeStr(o.notes) || "—";
+let details = safeStr(o.notes) || "—";
 
-      const lines = wrapText(
-        `${title}: ${details}`,
-        width - marginX * 2 - 10,
-        10.5,
-        font
-      );
+// If details contain "Discount note:", wrap that part in parentheses
+const marker = "Discount note:";
+const idx = details.indexOf(marker);
+
+if (idx >= 0) {
+  const before = details.slice(0, idx).trim();
+  const notePart = details.slice(idx).trim(); // starts with "Discount note: ..."
+  details = before ? `${before} (${notePart})` : `(${notePart})`;
+}
+
+const lines = wrapText(
+  `${title}: ${details}`,
+  width - marginX * 2 - 10,
+  10.5,
+  font
+);
 
       for (const ln of lines.slice(0, 2)) {
         drawText(ln, marginX + 10, ordersLineY, { size: 10.5 });
-        ordersLineY -= 13;
+        ordersLineY -= 23;
       }
       ordersLineY -= 2;
     }
@@ -693,8 +796,24 @@ if (doctorId != null && Number(vRows[0].doctor_id) !== doctorId) {
   y = ordersLineY - 6;
 
   // Prescription Notes (if any)
-  const rxNotes = safeStr(rx?.notes);
-  if (rxNotes) drawSection("Prescription Notes:", rxNotes);
+// Prescription Notes (if any)
+let rxNotes = safeStr(rx?.notes);
+
+if (rxNotes) {
+  const marker = "Pharmacy discount note:";
+  const idx = rxNotes.indexOf(marker);
+
+  if (idx >= 0) {
+    const before = rxNotes.slice(0, idx).trim();
+    const notePart = rxNotes.slice(idx).trim(); // starts with marker
+
+    rxNotes = before
+      ? `${before} (${notePart})`
+      : `(${notePart})`;
+  }
+
+  drawSection("Prescription Notes:", rxNotes);
+}
 
   // ===== Rx Table (match sample layout) =====
   drawText("Rx", marginX, y, { bold: true, size: 12 });

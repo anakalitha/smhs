@@ -11,8 +11,14 @@ function allowed(me: { roles?: string[] } | null | undefined) {
   return (
     roles.includes("RECEPTION") ||
     roles.includes("ADMIN") ||
-    roles.includes("SUPER_ADMIN")
+    roles.includes("SUPER_ADMIN") ||
+    roles.includes("DATA_ENTRY")
   );
+}
+
+function isAdmin(me: { roles?: string[] } | null | undefined) {
+  const roles = me?.roles ?? [];
+  return roles.includes("ADMIN") || roles.includes("SUPER_ADMIN");
 }
 
 type VisitRow = RowDataPacket & {
@@ -141,8 +147,12 @@ export async function GET(_req: Request, ctx: Ctx) {
   const r = rows[0];
   const amountNum = r.amount === null ? 0 : Number(r.amount);
 
+  const canEditPayment = isAdmin(me);
+  const canEditVisitDate = isAdmin(me);
+
   return NextResponse.json({
     ok: true,
+    permissions: { canEditPayment, canEditVisitDate },
     visit: {
       id: r.visit_id,
       visitDate: r.visit_date,
@@ -187,19 +197,12 @@ export async function PATCH(req: Request, ctx: Ctx) {
   if (!body)
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
 
-  const visitDate = String(body.visitDate || "").trim();
   const name = String(body.name || "").trim();
   const phone = String(body.phone || "")
     .replace(/\D+/g, "")
     .slice(0, 10);
 
   const doctorId = Number(body.doctorId || 0);
-  const consultingFee = Number(body.consultingFee || 0);
-  const paymentModeCode = String(body.paymentMode || "").trim(); // payment_mode_code
-  const payStatus = String(body.payStatus || "").trim() as
-    | "ACCEPTED"
-    | "PENDING"
-    | "WAIVED";
 
   const referralId = normalizeReferralId(body.referralId);
   if (referralId === "__INVALID__") {
@@ -212,11 +215,6 @@ export async function PATCH(req: Request, ctx: Ctx) {
     );
   }
 
-  if (!visitDate)
-    return NextResponse.json(
-      { error: "visitDate is required" },
-      { status: 400 }
-    );
   if (!name)
     return NextResponse.json({ error: "name is required" }, { status: 400 });
   if (phone && phone.length !== 10)
@@ -227,6 +225,68 @@ export async function PATCH(req: Request, ctx: Ctx) {
   if (!doctorId)
     return NextResponse.json(
       { error: "doctorId is required" },
+      { status: 400 }
+    );
+
+  const canEditPayment = isAdmin(me);
+  const canEditVisitDate = isAdmin(me);
+
+  // ✅ Reception/Data Entry: patient + doctor + referral only (NO visit_date, NO payment changes)
+  if (!canEditPayment || !canEditVisitDate) {
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      const [vRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT id, patient_id FROM visits WHERE id = ? FOR UPDATE`,
+        [vid]
+      );
+      if (!vRows.length) {
+        await conn.rollback();
+        return NextResponse.json({ error: "Visit not found" }, { status: 404 });
+      }
+      const patientId = Number(vRows[0].patient_id);
+
+      await conn.execute(
+        `UPDATE patients SET full_name = ?, phone = ? WHERE id = ?`,
+        [name, phone || null, patientId]
+      );
+
+      await conn.execute(
+        `UPDATE visits
+         SET doctor_id = ?, referralperson_id = ?
+         WHERE id = ?`,
+        [doctorId, referralId, vid]
+      );
+
+      await conn.commit();
+      return NextResponse.json({ ok: true });
+    } catch (e) {
+      console.error(e);
+      try {
+        await conn.rollback();
+      } catch {}
+      return NextResponse.json(
+        { error: "Failed to update visit" },
+        { status: 500 }
+      );
+    } finally {
+      conn.release();
+    }
+  }
+
+  // ✅ Admin/Super Admin: can edit visit_date + payment
+  const visitDate = String(body.visitDate || "").trim();
+  const consultingFee = Number(body.consultingFee || 0);
+  const paymentModeCode = String(body.paymentMode || "").trim();
+  const payStatus = String(body.payStatus || "").trim() as
+    | "ACCEPTED"
+    | "PENDING"
+    | "WAIVED";
+
+  if (!visitDate)
+    return NextResponse.json(
+      { error: "visitDate is required" },
       { status: 400 }
     );
   if (!Number.isFinite(consultingFee) || consultingFee < 0)
@@ -277,7 +337,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
       [visitDate, doctorId, referralId, vid]
     );
 
-    // Lock latest consultation payment row (PAYMENT direction)
+    // Lock latest consultation payment row
     const [pRows] = await conn.execute<RowDataPacket[]>(
       `
       SELECT id
@@ -295,7 +355,6 @@ export async function PATCH(req: Request, ctx: Ctx) {
     if (pRows.length) {
       const payId = Number(pRows[0].id);
 
-      // Respect CHECK(amount > 0). If WAIVED, don't set amount to 0.
       if (payStatus === "WAIVED") {
         await conn.execute<ResultSetHeader>(
           `UPDATE payments
@@ -304,7 +363,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
           [paymentModeCode, payStatus, payId]
         );
       } else {
-        const amt = Math.max(consultingFee, 0.01); // keep > 0 to satisfy CHECK
+        const amt = Math.max(consultingFee, 0.01);
         await conn.execute<ResultSetHeader>(
           `UPDATE payments
            SET amount = ?, payment_mode_code = ?, pay_status = ?
@@ -313,7 +372,6 @@ export async function PATCH(req: Request, ctx: Ctx) {
         );
       }
     } else {
-      // If WAIVED and no payment exists, don't insert a PAYMENT row (amount must be >0).
       if (payStatus !== "WAIVED") {
         const amt = Math.max(consultingFee, 0.01);
         await conn.execute<ResultSetHeader>(

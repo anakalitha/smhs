@@ -4,6 +4,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import DataTable, { type Column } from "@/components/ui/DataTable";
+import RegisterPatientModal from "@/components/reception/quick-opd/RegisterPatientModal";
+import VisitRegistrationForm from "@/components/reception/quick-opd/VisitRegistrationForm";
 
 type VisitRow = {
   visitId: number;
@@ -23,6 +25,7 @@ type ApiOk = {
     phone: string | null;
     dob: string | null;
     gender: string | null;
+    referredBy: string | null;
   };
   visits: VisitRow[];
   totalVisits: number;
@@ -55,6 +58,18 @@ export default function ReceptionPatientSummaryClient({
   const [patient, setPatient] = useState<ApiOk["patient"] | null>(null);
   const [visits, setVisits] = useState<VisitRow[]>([]);
   const [totalVisits, setTotalVisits] = useState(0);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editVisitId, setEditVisitId] = useState<number | null>(null);
+
+  function openEditVisit(visitId: number) {
+    setEditVisitId(visitId);
+    setEditOpen(true);
+  }
+
+  function closeEditVisit() {
+    setEditOpen(false);
+    setEditVisitId(null);
+  }
 
   async function load() {
     setLoading(true);
@@ -171,6 +186,8 @@ export default function ReceptionPatientSummaryClient({
                   <span className="font-medium">{patient?.phone ?? "—"}</span>{" "}
                   • Total Visits:{" "}
                   <span className="font-medium">{totalVisits}</span>
+                  • Referred By:{" "}
+                  <span className="font-medium">{patient?.referredBy ?? "—"}</span>
                 </div>
               </div>
             </div>
@@ -189,6 +206,10 @@ export default function ReceptionPatientSummaryClient({
                   groupedActions={(row) => [
                     {
                       items: [
+                        {
+                          label: "Edit Visit Data",
+                          onClick: () => openEditVisit(row.visitId),
+                        },
                         {
                           label: "View Visit Summary (Billing)",
                           onClick: () => router.push(`/visits/${row.visitId}`),
@@ -225,6 +246,29 @@ export default function ReceptionPatientSummaryClient({
           </>
         )}
       </div>
+      <RegisterPatientModal
+        open={editOpen}
+        onClose={closeEditVisit}
+        title="Edit Visit Data"
+      >
+        {editVisitId ? (
+          <VisitRegistrationForm
+            mode="edit"
+            visitId={editVisitId}
+            showFetch={false}
+            openBillOnCreate={false}
+            onSuccess={() => {
+              // after edit, refresh this page’s data
+              closeEditVisit();
+              // Option A: if you have a local reload() function, call it:
+              void load();
+              // Option B: if you're using router:
+              // router.refresh();
+            }}
+          />
+        ) : null}
+      </RegisterPatientModal>
+
     </div>
   );
 }

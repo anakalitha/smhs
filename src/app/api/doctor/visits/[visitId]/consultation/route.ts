@@ -141,6 +141,15 @@ type SavePayload = {
       sortOrder: number;
     }>;
   };
+
+  chargeAdjustments?: Array<{
+    serviceId: number; // 0 means "Consultation" (resolved in backend)
+    waive: boolean;
+    mode: "PERCENT" | "AMOUNT";
+    percent?: number | null;
+    amount?: number | null;
+    reason?: string | null;
+  }>;
 };
 
 type ServiceCode = "SCAN" | "PAP" | "CTG" | "LAB";
@@ -164,6 +173,30 @@ async function getServiceIdMap(connOrDb: DbLike, args: { orgId: number }) {
     if (Number.isFinite(id) && id > 0) map.set(code, id);
   }
   return map;
+}
+
+async function resolveConsultationServiceId(connOrDb: DbLike, args: { orgId: number }) {
+  const [rows] = await connOrDb.execute<RowDataPacket[]>(
+    `
+    SELECT id, code, display_name
+    FROM services
+    WHERE organization_id = :org
+      AND is_active = 1
+      AND (
+        code = 'CONSULTATION'
+        OR LOWER(display_name) LIKE '%consult%'
+      )
+    ORDER BY
+      CASE WHEN code = 'CONSULTATION' THEN 0 ELSE 1 END,
+      id ASC
+    LIMIT 1
+    `,
+    { org: args.orgId }
+  );
+
+  if (rows.length === 0) return null;
+  const id = Number(rows[0].id);
+  return Number.isFinite(id) && id > 0 ? id : null;
 }
 
 function toNullableInt(v: number | "" | null | undefined): number | null {
@@ -277,6 +310,50 @@ export async function GET(req: Request, ctx: Ctx) {
     { visitId: id }
   );
 
+  // Fee components for this visit (dropdown + computation)
+  const [feeRows] = await db.execute<RowDataPacket[]>(
+    `
+    SELECT
+      vc.service_id AS serviceId,
+      s.code AS code,
+      s.display_name AS displayName,
+      vc.gross_amount AS grossAmount,
+      vc.discount_amount AS discountAmount,
+      vc.net_amount AS netAmount
+    FROM visit_charges vc
+    JOIN services s ON s.id = vc.service_id
+    WHERE vc.visit_id = :visitId
+      AND s.organization_id = :org
+      AND s.is_active = 1
+    ORDER BY s.display_name ASC
+    `,
+    { visitId: id, org: orgId }
+  );
+
+  // Latest adjustment per service for this visit (if any)
+  const [adjRows] = await db.execute<RowDataPacket[]>(
+    `
+    SELECT a.service_id AS serviceId,
+           a.old_gross_amount AS oldGrossAmount,
+           a.old_discount_amount AS oldDiscountAmount,
+           a.old_net_amount AS oldNetAmount,
+           a.new_discount_amount AS newDiscountAmount,
+           a.new_net_amount AS newNetAmount,
+           a.reason,
+           a.created_at AS createdAt
+    FROM consultation_charge_adjustments a
+    JOIN (
+      SELECT service_id, MAX(created_at) AS max_created_at
+      FROM consultation_charge_adjustments
+      WHERE visit_id = :visitId
+      GROUP BY service_id
+    ) x ON x.service_id = a.service_id AND x.max_created_at = a.created_at
+    WHERE a.visit_id = :visitId
+    `,
+    { visitId: id }
+  );
+
+
   return NextResponse.json({
     ok: true,
 
@@ -327,6 +404,27 @@ export async function GET(req: Request, ctx: Ctx) {
       status: o.status, // "ORDERED" | "IN_PROGRESS" | "COMPLETED"
       createdAt: String(o.ordered_at), // map ordered_at -> createdAt
     })),
+
+    feeComponents: feeRows.map((r) => ({
+      serviceId: Number(r.serviceId),
+      code: String(r.code),
+      displayName: String(r.displayName),
+      grossAmount: Number(r.grossAmount),
+      discountAmount: Number(r.discountAmount),
+      netAmount: Number(r.netAmount),
+    })),
+
+    chargeAdjustments: adjRows.map((r) => ({
+      serviceId: Number(r.serviceId),
+      oldGrossAmount: Number(r.oldGrossAmount),
+      oldDiscountAmount: Number(r.oldDiscountAmount),
+      oldNetAmount: Number(r.oldNetAmount),
+      newDiscountAmount: Number(r.newDiscountAmount),
+      newNetAmount: Number(r.newNetAmount),
+      reason: String(r.reason || ""),
+      createdAt: String(r.createdAt || ""),
+    })),
+
   });
 }
 
@@ -415,6 +513,114 @@ export async function POST(req: Request, ctx: Ctx) {
         by: me.id,
       }
     );
+
+    // 1.5) Insert fee waiver/discount adjustments (do NOT overwrite visit_charges)
+    const drafts = Array.isArray((body as any).chargeAdjustments)
+      ? ((body as any).chargeAdjustments as SavePayload["chargeAdjustments"])
+      : [];
+
+    if (drafts && drafts.length > 0) {
+      const [chargeRows] = await conn.execute<RowDataPacket[]>(
+        `
+        SELECT service_id AS serviceId, gross_amount AS grossAmount,
+               discount_amount AS discountAmount, net_amount AS netAmount
+        FROM visit_charges
+        WHERE visit_id = :visitId
+        `,
+        { visitId: id }
+      );
+
+      const chargeMap = new Map<number, { gross: number; disc: number; net: number }>();
+      for (const r of chargeRows) {
+        chargeMap.set(Number(r.serviceId), {
+          gross: Number(r.grossAmount),
+          disc: Number(r.discountAmount),
+          net: Number(r.netAmount),
+        });
+      }
+
+      for (const d of drafts) {
+        let serviceId = Number((d as any)?.serviceId);
+        // ✅ Map serviceId=0 => Consultation serviceId
+  if (serviceId === 0) {
+    const consultationServiceId = await resolveConsultationServiceId(conn, { orgId });
+    if (!consultationServiceId) {
+      throw new Error(
+        "Consultation service not configured (code='CONSULTATION' or display_name contains 'Consult')."
+      );
+    }
+    serviceId = consultationServiceId;
+  }
+
+        if (!Number.isFinite(serviceId) || serviceId <= 0) continue;
+
+        const ch = chargeMap.get(serviceId);
+        if (!ch) {
+          throw new Error(`No visit charge found for serviceId=${serviceId}`);
+        }
+
+        const waive = !!(d as any).waive;
+        const mode = (d as any).mode === "PERCENT" ? "PERCENT" : "AMOUNT";
+        const pct = Number((d as any).percent ?? 0);
+        const amt = Number((d as any).amount ?? 0);
+
+        const oldGross = ch.gross;
+        const oldDisc = ch.disc;
+        const oldNet = ch.net;
+
+        let discountOff = 0;
+
+        if (waive) {
+          // Make net 0 by setting discount to gross
+          discountOff = oldNet;
+        } else if (mode === "PERCENT") {
+          const p = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0));
+          discountOff = (oldNet * p) / 100;
+        } else {
+          const a = Math.max(0, Number.isFinite(amt) ? amt : 0);
+          discountOff = Math.min(oldNet, a);
+        }
+
+        discountOff = Math.round(discountOff * 100) / 100;
+
+        const newNet = Math.round(Math.max(0, oldNet - discountOff) * 100) / 100;
+        const newDisc = Math.round(Math.min(oldGross, oldDisc + discountOff) * 100) / 100;
+
+        const reasonRaw =
+          typeof (d as any).reason === "string" ? (d as any).reason.trim() : "";
+        const reason =
+          reasonRaw ? reasonRaw.slice(0, 500) : "Doctor discount/waiver";
+
+        await conn.execute<ResultSetHeader>(
+          `
+          INSERT INTO consultation_charge_adjustments
+            (visit_id, service_id,
+             old_gross_amount, old_discount_amount, old_net_amount,
+             new_discount_amount, new_net_amount,
+             refund_amount, refund_payment_id,
+             reason, authorized_by_doctor_id, created_by)
+          VALUES
+            (:visitId, :serviceId,
+             :oldGross, :oldDisc, :oldNet,
+             :newDisc, :newNet,
+             0.00, NULL,
+             :reason, :authDoctorId, :createdBy)
+          `,
+          {
+            visitId: id,
+            serviceId,
+            oldGross,
+            oldDisc,
+            oldNet,
+            newDisc,
+            newNet,
+            reason,
+            authDoctorId: Number(vRows[0].doctor_id), // visits.doctor_id (doctors.id)
+            createdBy: me.id, // users.id
+          }
+        );
+      }
+    }
 
     // 2) Orders (visit_orders uses `notes`, ordered_at, ordered_by_user_id)
     const serviceIdMap = await getServiceIdMap(conn, { orgId });

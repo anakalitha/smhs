@@ -12,6 +12,9 @@ type VisitRow = RowDataPacket & {
   status: string;
   doctorName: string | null;
 
+  // NEW
+  referredBy: string | null;
+
   netAmount: number;
   paidAmount: number;
   payStatus: "ACCEPTED" | "PENDING" | "WAIVED";
@@ -32,7 +35,7 @@ function asNumber(v: unknown) {
   return Number.isFinite(n) ? n : 0;
 }
 
-export async function GET(req: Request, ctx: Ctx) {
+export async function GET(_req: Request, ctx: Ctx) {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (!isReceptionOrAdmin(me))
@@ -93,8 +96,7 @@ export async function GET(req: Request, ctx: Ctx) {
     );
   }
 
-  // 3) All visits for this patient within org+branch (include today's visit too)
-  //    Compute net from visit_charges and paid from payments (ACCEPTED only)
+  // 3) Visits list (latest first)
   const [vRows] = await db.execute<VisitRow[]>(
     `
     SELECT
@@ -103,16 +105,21 @@ export async function GET(req: Request, ctx: Ctx) {
       v.status AS status,
       d.full_name AS doctorName,
 
+      rp.name AS referredBy,
+
       COALESCE(vc.net_amount, 0) AS netAmount,
       COALESCE(paid.paidAmount, 0) AS paidAmount,
       paid.paymentMode AS paymentMode
     FROM visits v
     LEFT JOIN doctors d ON d.id = v.doctor_id
+    LEFT JOIN referralperson rp ON rp.id = v.referralperson_id
+
     LEFT JOIN (
       SELECT visit_id, MAX(net_amount) AS net_amount
       FROM visit_charges
       GROUP BY visit_id
     ) vc ON vc.visit_id = v.id
+
     LEFT JOIN (
       SELECT
         visit_id,
@@ -127,6 +134,7 @@ export async function GET(req: Request, ctx: Ctx) {
         AND pay_status = 'ACCEPTED'
       GROUP BY visit_id
     ) paid ON paid.visit_id = v.id
+
     WHERE v.patient_id = :pid
       AND v.organization_id = :org
       AND v.branch_id = :branch
@@ -149,11 +157,19 @@ export async function GET(req: Request, ctx: Ctx) {
       visitDate: String(r.visitDate),
       status: String(r.status),
       doctorName: r.doctorName ? String(r.doctorName) : null,
+
+      // optional: keep per-visit referredBy available
+      referredBy: r.referredBy ? String(r.referredBy) : null,
+
       netAmount: net,
       payStatus,
       paymentMode: r.paymentMode ? String(r.paymentMode) : null,
     };
   });
+
+  // Header-level referredBy: from latest visit (since visits are ordered DESC)
+  const latestReferredBy =
+    visits.length > 0 ? visits[0].referredBy ?? null : null;
 
   return NextResponse.json({
     ok: true,
@@ -163,6 +179,9 @@ export async function GET(req: Request, ctx: Ctx) {
       phone: pRows[0].phone ? String(pRows[0].phone) : null,
       dob: pRows[0].dob ? String(pRows[0].dob) : null,
       gender: pRows[0].gender ? String(pRows[0].gender) : null,
+
+      // ✅ NEW
+      referredBy: latestReferredBy,
     },
     visits,
     totalVisits: visits.length,

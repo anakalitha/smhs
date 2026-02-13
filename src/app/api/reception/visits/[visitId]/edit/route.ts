@@ -1,3 +1,4 @@
+// src\app\api\reception\visits\[visitId]\edit\route.ts
 import { NextResponse } from "next/server";
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db";
