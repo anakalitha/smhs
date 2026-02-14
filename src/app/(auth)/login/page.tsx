@@ -45,16 +45,17 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen grid grid-cols-1 lg:grid-cols-2">
       {/* LEFT: Login Form */}
-      <div className="relative hidden lg:block min-h-screen">
-        <Image
-          src="/building.png"
-          alt="Hospital Building"
-          fill
-          priority
-          sizes="(min-width: 1024px) 50vw, 100vw"
-          className="object-cover object-left-bottom"
-        />
-      </div>
+{/* LEFT: Building Image */}
+<div className="relative hidden lg:block min-h-screen bg-gray-100">
+  <Image
+    src="/building.png"
+    alt="Hospital Building"
+    fill
+    priority
+    sizes="(min-width: 1024px) 50vw, 100vw"
+    className="object-contain object-center"
+  />
+</div>
 
       {/* RIGHT: Building Image */}
       <div className="flex items-center justify-center px-6 py-12">
