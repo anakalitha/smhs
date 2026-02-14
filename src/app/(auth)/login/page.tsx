@@ -48,7 +48,7 @@ export default function LoginPage() {
 {/* LEFT: Building Image */}
 <div className="relative hidden lg:block min-h-screen bg-gray-100">
   <Image
-    src="/building.png"
+    src="/building.jpg"
     alt="Hospital Building"
     fill
     priority

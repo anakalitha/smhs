@@ -5,4 +5,5 @@ This software is being developed for Dr. A.H.Shivabasavaswamy to manage his OPD 
 
 https://smhs-nu.vercel.app/login
 
-Test
+Remove-Item -Recurse -Force .next
+
